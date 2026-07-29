@@ -49,8 +49,9 @@ class Mouse:
         if x is not None and y is not None:
             self.move_to(x, y)
             time.sleep(0.01)
-            self.nudge()
+            self.nudge(-1,0)
             time.sleep(0.005)
+            self.nudge()
         self.down(button)
         time.sleep(hold)
         self.up(button)
