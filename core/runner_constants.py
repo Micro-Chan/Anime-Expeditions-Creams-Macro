@@ -466,6 +466,11 @@ AUTO_UPGRADE_CLEAR_HOLD = 1.0    # press-and-hold that clears it back to off
 
 AUTO_UPGRADE_CLICK_SETTLE = 0.6
 
+# Send Key block (see _run_send_key_tick): between repeat presses, so each
+# one registers separately instead of several landing as one -- same
+# reasoning as AUTO_UPGRADE_STEP_DELAY above.
+SEND_KEY_REPEAT_DELAY = 0.15
+
 # Team Loadout application (see _apply_team_loadout) -- H opens the panel,
 # then Loadout 1-3 are stacked rows at a fixed position. 4+ exist in
 # Creation's picker but aren't reachable yet without scrolling.
@@ -563,7 +568,7 @@ DEFAULT_COORDS = {
 # polled slowly since there's no rush to notice a screen that, once it
 # appears, just sits there until acted on.
 MATCH_RESULT_TIMEOUT = 1800.0
-MATCH_RESULT_POLL_INTERVAL = 1.0
+MATCH_RESULT_POLL_INTERVAL = 0.2
 
 
 # ── Auto Crafting (interleaved, see core.runner_crafting) ──

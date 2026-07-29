@@ -3405,7 +3405,7 @@ const BLOCK_TYPES = {
   // anything no dedicated block covers). Bespoke controls: a key-capture
   // button + an optional hold time. See renderSendKeyControls / the runner's
   // _run_send_key_tick.
-  send_key:           { label: 'Send Key',          group: 'Setup',  color: 'var(--brand)', params: [{ key: 'hold_ms', type: 'number', placeholder: 'hold ms', default: 0 }] },
+  send_key:           { label: 'Send Key',          group: 'Setup',  color: 'var(--brand)', params: [{ key: 'hold_ms', type: 'number', placeholder: 'hold ms', default: 0 }, { key: 'repeat', type: 'number', placeholder: 'repeat', default: 1 }] },
   // Detect: search for an image (or a combination, or a raw condition) and run
   // one of two nested block groups -- Then when found, Else when not. The
   // macro's one branching block. Bespoke controls: renderDetectControls();
@@ -4103,13 +4103,15 @@ function renderClickControls(b) {
 
 // Send Key block: capture a key (stored in b.key, reusing the same keybind
 // capture the Place Unit hotkey uses) + an optional hold time in ms (0 = a
-// quick tap). See the runner's _run_send_key_tick.
+// quick tap) + how many times to repeat the press/hold. See the runner's
+// _run_send_key_tick.
 function renderSendKeyControls(b) {
   const field = (label, inner) => `
     <label class="blk-field"><span class="blk-field-label">${label}</span>${inner}</label>`;
   const key = field('Key', `<button type="button" class="keybind-btn" onclick="startBlockHotkeyCapture('${b.id}', 'key', this)">${b.key ? b.key.toUpperCase() : 'Set key'}</button>`);
   const hold = field('Hold (ms)', `<input class="block-input" type="number" min="0" style="width:70px;" value="${b.params.hold_ms ?? 0}" oninput="updateBlockParam('${b.id}', 'hold_ms', this.value)" title="0 = quick tap; higher = hold the key that long">`);
-  return key + hold;
+  const repeat = field('Repeat', `<input class="block-input" type="number" min="1" style="width:60px;" value="${b.params.repeat ?? 1}" oninput="updateBlockParam('${b.id}', 'repeat', this.value)" title="How many times to press/hold the key in a row">`);
+  return key + hold + repeat;
 }
 
 // Walk block: dropdown of the same recorded paths the pinned Walk Path row
@@ -4247,11 +4249,11 @@ function renderAutoUpgradeControls(b) {
   const current = String(b.params.priority ?? 1);
   const options = AUTO_UPGRADE_PRIORITIES.map(p =>
     `<option value="${p}" ${p === current ? 'selected' : ''}>${p}</option>`).join('');
-  const useKey = `<button type="button" class="block-mod-btn ${b.useKey ? 'on' : ''} tooltip-side" data-tooltip="Instead of clicking the priority icon, click the unit then press Hotkey this many times. No hotkey set falls back to clicking." onclick="toggleAutoUpgradeUseKey('${b.id}')">Use Key</button>`;
+  const useKey = `<button type="button" class="block-mod-btn ${b.useKey ? 'on' : ''} tooltip-side" data-tooltip="Press hotkey instead, clicks if hotkey not set." onclick="toggleAutoUpgradeUseKey('${b.id}')">Use Key</button>`;
   const hotkey = blkField('Hotkey', `<button type="button" class="keybind-btn" onclick="startBlockHotkeyCapture('${b.id}', 'hotkey', this)">${b.hotkey ? b.hotkey.toUpperCase() : 'Set key'}</button>`);
   return blkField('Unit', renderUnitIndexSelect(b, 'index'))
     + blkField('Priority', `<select class="block-input" style="width:auto;" onchange="updateBlockParam('${b.id}', 'priority', this.value)">${options}</select>`)
-    + useKey + hotkey;
+    + hotkey + useKey;
 }
 
 // Click Unit: which placed unit (#index) to click -- same picker as

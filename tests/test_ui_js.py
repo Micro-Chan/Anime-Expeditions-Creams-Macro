@@ -1012,6 +1012,36 @@ def test_click_unit_block_type_registered(tmp_path):
     assert out["hasControls"] is True
 
 
+def test_send_key_repeat_field_registered(tmp_path):
+    body = """
+    console.log(JSON.stringify({
+        hasRepeatParam: src.includes("{ key: 'repeat', type: 'number', placeholder: 'repeat', default: 1 }"),
+        hasRepeatField: src.includes("field('Repeat',")
+    }));
+    """
+    out = run_js(body, tmp_path)
+    assert out["hasRepeatParam"] is True
+    assert out["hasRepeatField"] is True
+
+
+def test_render_send_key_controls_places_repeat_after_hold_and_defaults_to_one(tmp_path):
+    out = run_js("""
+      eval(extract('renderSendKeyControls'));
+      const withRepeat = renderSendKeyControls({ id: 'b1', key: 't', params: { hold_ms: 0, repeat: 1 } });
+      const withoutRepeat = renderSendKeyControls({ id: 'b1', key: 't', params: { hold_ms: 0 } });
+      console.log(JSON.stringify({
+        holdIdx: withRepeat.indexOf('Hold (ms)'),
+        repeatIdx: withRepeat.indexOf('Repeat'),
+        hasValueOne: withRepeat.includes('value=\\"1\\"'),
+        fallsBackToOneWhenUnset: withoutRepeat.includes('value=\\"1\\"'),
+      }));
+    """, tmp_path)
+    assert out["holdIdx"] != -1 and out["repeatIdx"] != -1
+    assert out["holdIdx"] < out["repeatIdx"]
+    assert out["hasValueOne"] is True
+    assert out["fallsBackToOneWhenUnset"] is True
+
+
 def test_auto_upgrade_use_key_registered(tmp_path):
     body = """
     console.log(JSON.stringify({

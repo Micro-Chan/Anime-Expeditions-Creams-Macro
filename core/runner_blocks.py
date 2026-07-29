@@ -231,7 +231,7 @@ class BlockOps:
                 done = True
                 self._battle_block_state = {}
             elif btype == "send_key":
-                self._run_send_key_tick(block, self._battle_block_index + 1)
+                self._run_send_key_tick(stop_event, block, self._battle_block_index + 1)
                 done = True
                 self._battle_block_state = {}
             elif btype == "leave_at_minute":
@@ -883,7 +883,7 @@ class BlockOps:
                 next_block = prestart_blocks[idx + 1] if idx + 1 < len(prestart_blocks) else None
                 self._run_prestart_single_block(hwnd, stop_event, task, default_walk_paths or {},
                                                   block, step, macro_name, first_repeat, next_block)
-                time.sleep(0.2)  # brief gap between blocks so the game UI can settle
+                time.sleep(0.1)  # brief gap between blocks so the game UI can settle
                 idx += 1
         finally:
             # Safety net -- a "Once"-skipped block right after the last
@@ -919,7 +919,7 @@ class BlockOps:
         elif btype == "wait_ms":
             self._run_wait_ms_tick(stop_event, block, i, phase_label="Pre Start")
         elif btype == "send_key":
-            self._run_send_key_tick(block, i, phase_label="Pre Start")
+            self._run_send_key_tick(stop_event, block, i, phase_label="Pre Start")
         elif btype == "target_priority":
             self._run_target_priority_tick(hwnd, stop_event, block, i, phase_label="Pre Start")
         elif btype == "click_unit":
@@ -1509,14 +1509,20 @@ class BlockOps:
             return None
         return (vk, hold_seconds)
 
-    def _run_send_key_tick(self, block: dict, block_num: int, phase_label: str = "Battle") -> None:
+    def _run_send_key_tick(self, stop_event: threading.Event, block: dict, block_num: int,
+                             phase_label: str = "Battle") -> None:
         """Send Key block: press (or hold) one keyboard key at this point in
         the sequence -- for any in-game key action no dedicated block covers
         (an ability, an interact key, a menu toggle). The key is captured in
         Creation (block["key"]); an optional hold_ms > 0 holds it that long
-        instead of a quick tap. Blacklisted keys (Win/Meta, which could yank
-        focus off Roblox) are refused, same as the Setting block's custom
-        key. Never a movement key by design -- use a Walk block for pathing."""
+        instead of a quick tap. repeat (default 1) does that press/hold that
+        many times in a row, with a short settle between presses (see
+        SEND_KEY_REPEAT_DELAY) so each one registers separately rather than
+        several landing as one -- and a checkpoint after each so Pause/Stop
+        cuts in promptly during a long repeat instead of running to the end
+        first. Blacklisted keys (Win/Meta, which could yank focus off
+        Roblox) are refused, same as the Setting block's custom key. Never a
+        movement key by design -- use a Walk block for pathing."""
         key_name = (block.get("key") or "").strip()
         params = block.get("params") or {}
         if not key_name:
@@ -1533,12 +1539,23 @@ class BlockOps:
             hold_ms = max(0, int(params.get("hold_ms") or 0))
         except (TypeError, ValueError):
             hold_ms = 0
-        if hold_ms > 0:
-            self._log(f'{phase_label} block #{block_num} (Send Key): holding "{key_name}" for {hold_ms}ms.')
-            self._keyboard.tap(vk, hold=hold_ms / 1000.0)
-        else:
-            self._log(f'{phase_label} block #{block_num} (Send Key): pressing "{key_name}".')
-            self._keyboard.tap(vk)
+        try:
+            repeat = max(1, int(params.get("repeat") or 1))
+        except (TypeError, ValueError):
+            repeat = 1
+
+        action = f'holding "{key_name}" for {hold_ms}ms' if hold_ms > 0 else f'pressing "{key_name}"'
+        times = f' {repeat}x' if repeat > 1 else ''
+        self._log(f'{phase_label} block #{block_num} (Send Key): {action}{times}.')
+        for n in range(repeat):
+            if hold_ms > 0:
+                self._keyboard.tap(vk, hold=hold_ms / 1000.0)
+            else:
+                self._keyboard.tap(vk)
+            if n < repeat - 1:
+                time.sleep(SEND_KEY_REPEAT_DELAY)
+            if self._checkpoint(stop_event):
+                return
 
     def _run_setting_block(self, hwnd, stop_event: threading.Event, block: dict, index: int) -> None:
         name = (block.get("params") or {}).get("name") or f"#{index}"

@@ -457,3 +457,98 @@ def test_run_auto_upgrade_unit_tick_ignores_use_key_without_a_hotkey():
     assert done is True
     assert not runner._keyboard.tap.called
     assert any("priority_upgrade" in log for log in runner.logs)
+
+
+def _send_key_runner():
+    from core.runner_blocks import BlockOps
+    from unittest.mock import MagicMock
+
+    class DummyRunner(BlockOps):
+        def __init__(self):
+            self._keyboard = MagicMock()
+            self.logs = []
+        def _log(self, msg):
+            self.logs.append(msg)
+        def _checkpoint(self, stop_event):
+            return False
+
+    return DummyRunner()
+
+
+def test_run_send_key_tick_default_repeat_is_a_single_press():
+    runner = _send_key_runner()
+    stop_event = MagicMock(is_set=lambda: False)
+
+    runner._run_send_key_tick(stop_event, {"key": "t", "params": {}}, 1)
+
+    assert runner._keyboard.tap.call_count == 1
+
+
+def test_run_send_key_tick_repeats_n_times():
+    from core import keys
+
+    runner = _send_key_runner()
+    stop_event = MagicMock(is_set=lambda: False)
+
+    runner._run_send_key_tick(stop_event, {"key": "t", "params": {"repeat": 4}}, 1)
+
+    assert runner._keyboard.tap.call_count == 4
+    for call in runner._keyboard.tap.call_args_list:
+        assert call.args[0] == keys.key_name_to_vk("t")
+        assert "hold" not in call.kwargs
+    assert any("pressing \"t\" 4x" in log for log in runner.logs)
+
+
+def test_run_send_key_tick_repeats_with_hold():
+    runner = _send_key_runner()
+    stop_event = MagicMock(is_set=lambda: False)
+
+    runner._run_send_key_tick(stop_event, {"key": "t", "params": {"hold_ms": 200, "repeat": 3}}, 1)
+
+    assert runner._keyboard.tap.call_count == 3
+    for call in runner._keyboard.tap.call_args_list:
+        assert call.kwargs.get("hold") == 0.2
+    assert any('holding "t" for 200ms 3x' in log for log in runner.logs)
+
+
+def test_run_send_key_tick_invalid_repeat_falls_back_to_one():
+    runner = _send_key_runner()
+    stop_event = MagicMock(is_set=lambda: False)
+
+    runner._run_send_key_tick(stop_event, {"key": "t", "params": {"repeat": "abc"}}, 1)
+
+    assert runner._keyboard.tap.call_count == 1
+
+
+def test_run_send_key_tick_zero_or_negative_repeat_clamps_to_one():
+    runner = _send_key_runner()
+    stop_event = MagicMock(is_set=lambda: False)
+
+    runner._run_send_key_tick(stop_event, {"key": "t", "params": {"repeat": -5}}, 1)
+
+    assert runner._keyboard.tap.call_count == 1
+
+
+def test_run_send_key_tick_checkpoint_stops_early():
+    """A Stop/Pause mid-repeat cuts the remaining presses short instead of
+    running the whole repeat count out first."""
+    from core.runner_blocks import BlockOps
+    from unittest.mock import MagicMock
+
+    class DummyRunner(BlockOps):
+        def __init__(self):
+            self._keyboard = MagicMock()
+            self.logs = []
+            self.checks = 0
+        def _log(self, msg):
+            self.logs.append(msg)
+        def _checkpoint(self, stop_event):
+            self.checks += 1
+            return self.checks >= 2  # stop right after the 2nd press
+
+    runner = DummyRunner()
+    stop_event = MagicMock(is_set=lambda: False)
+
+    runner._run_send_key_tick(stop_event, {"key": "t", "params": {"repeat": 10}}, 1)
+
+    assert runner._keyboard.tap.call_count == 2

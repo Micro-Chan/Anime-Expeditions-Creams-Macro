@@ -35,7 +35,7 @@ def test_loop_phase_cycles_and_restarts_at_the_end(monkeypatch):
     runner._battle_block_index = 99
     runner._battle_block_state = {"battle": "keep"}
     recorded = []
-    runner._run_send_key_tick = lambda block, num, phase_label="Battle": recorded.append(block.get("_tag"))
+    runner._run_send_key_tick = lambda stop, block, num, phase_label="Battle": recorded.append(block.get("_tag"))
 
     flat, _ = rb.detect.flatten([{"type": "send_key", "_tag": "A"}, {"type": "send_key", "_tag": "B"}])
     runner._loop_runtime = {
@@ -54,7 +54,7 @@ def test_loop_phase_cycles_and_restarts_at_the_end(monkeypatch):
 def test_loop_phase_evaluates_detect_each_cycle(monkeypatch):
     runner = _runner()
     recorded = []
-    runner._run_send_key_tick = lambda block, num, phase_label="Battle": recorded.append(block.get("_tag"))
+    runner._run_send_key_tick = lambda stop, block, num, phase_label="Battle": recorded.append(block.get("_tag"))
     monkeypatch.setattr(rb.detect, "evaluate", lambda r, h, b: (True, []))
 
     flat, _ = rb.detect.flatten([

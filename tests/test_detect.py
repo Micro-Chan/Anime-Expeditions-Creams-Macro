@@ -199,7 +199,7 @@ def test_battle_tick_runs_then_branch_when_found(monkeypatch):
     runner._battle_block_state = {}
     runner._log = lambda *a, **k: None
     recorded = []
-    runner._run_send_key_tick = lambda block, num, phase_label="Battle": recorded.append(block.get("_tag"))
+    runner._run_send_key_tick = lambda stop, block, num, phase_label="Battle": recorded.append(block.get("_tag"))
     runner._run_wait_ms_tick = lambda stop, block, num, phase_label="Battle": recorded.append(block.get("_tag"))
     monkeypatch.setattr(rb.detect, "evaluate", lambda r, h, b: (True, []))
 
@@ -219,7 +219,7 @@ def test_battle_tick_runs_else_branch_when_not_found(monkeypatch):
     runner._battle_block_state = {}
     runner._log = lambda *a, **k: None
     recorded = []
-    runner._run_send_key_tick = lambda block, num, phase_label="Battle": recorded.append(block.get("_tag"))
+    runner._run_send_key_tick = lambda stop, block, num, phase_label="Battle": recorded.append(block.get("_tag"))
     runner._run_wait_ms_tick = lambda stop, block, num, phase_label="Battle": recorded.append(block.get("_tag"))
     monkeypatch.setattr(rb.detect, "evaluate", lambda r, h, b: (False, []))
 
@@ -305,7 +305,7 @@ def test_battle_tick_runs_if_then_branch_when_bool_true():
     runner._log = lambda *a, **k: None
     runner._macro_booleans = {"ready": True}
     recorded = []
-    runner._run_send_key_tick = lambda block, num, phase_label="Battle": recorded.append(block.get("_tag"))
+    runner._run_send_key_tick = lambda stop, block, num, phase_label="Battle": recorded.append(block.get("_tag"))
     runner._run_wait_ms_tick = lambda stop, block, num, phase_label="Battle": recorded.append(block.get("_tag"))
 
     flat, _ = rb.detect.flatten([
@@ -325,7 +325,7 @@ def test_battle_tick_runs_if_else_branch_when_bool_false():
     runner._log = lambda *a, **k: None
     runner._macro_booleans = {"ready": False}
     recorded = []
-    runner._run_send_key_tick = lambda block, num, phase_label="Battle": recorded.append(block.get("_tag"))
+    runner._run_send_key_tick = lambda stop, block, num, phase_label="Battle": recorded.append(block.get("_tag"))
     runner._run_wait_ms_tick = lambda stop, block, num, phase_label="Battle": recorded.append(block.get("_tag"))
 
     flat, _ = rb.detect.flatten([
@@ -348,7 +348,7 @@ def test_set_boolean_then_if_end_to_end():
     runner._macro_booleans = {}
     runner._log = lambda *a, **k: None
     recorded = []
-    runner._run_send_key_tick = lambda block, num, phase_label="Battle": recorded.append(block.get("_tag"))
+    runner._run_send_key_tick = lambda stop, block, num, phase_label="Battle": recorded.append(block.get("_tag"))
 
     flat, _ = rb.detect.flatten([
         {"type": "set_boolean", "params": {"name": "ready", "value": "True"}},
