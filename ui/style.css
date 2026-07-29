@@ -1467,6 +1467,29 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
   text-decoration: underline; text-underline-offset: 2px;
 }
 .im-thr-reset:hover { color: var(--brand); }
+.im-thr-test {
+  font-size: 9px; font-weight: 700; color: var(--teal); cursor: pointer; flex-shrink: 0;
+  border: 1px solid color-mix(in srgb, var(--teal) 45%, var(--border)); border-radius: 4px;
+  padding: 2px 6px; letter-spacing: 0.02em;
+}
+.im-thr-test:hover { background: color-mix(in srgb, var(--teal) 12%, transparent); }
+.im-thr-test.busy { opacity: 0.6; pointer-events: none; }
+
+/* Small self-dismissing corner notice (testImageMatch's result, etc.) --
+   see showToast in app.js. Hidden by default via zero opacity + translateY
+   so it can slide/fade in rather than just popping into place. */
+.app-toast {
+  position: fixed; right: 16px; bottom: 16px; z-index: 10000;
+  max-width: 320px; padding: 10px 14px; border-radius: 8px;
+  background: var(--bg-card); color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--teal) 45%, var(--border));
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  font-size: 12px; font-weight: 600;
+  opacity: 0; transform: translateY(8px); pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.app-toast.visible { opacity: 1; transform: translateY(0); }
+.app-toast.error { border-color: color-mix(in srgb, var(--rose) 55%, var(--border)); }
 .im-card-name {
   font-size: 11px; font-weight: 700; color: var(--text-dim);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;

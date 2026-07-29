@@ -758,6 +758,35 @@ def find_in_gray_multiscale(haystack_gray: np.ndarray, name: str, template_dir: 
     return None
 
 
+def find_best_score(hwnd: int, name: str, region: tuple = None, template_dir: str = UI_ASSETS_DIR) -> dict:
+    """Same capture + matching path as find_image (grayscale, every variant
+    image, every SCALE_FACTORS scale) but ignores threshold entirely and
+    returns the single highest-scoring match found, even one that would
+    normally be a clean miss. find_image/find_in_gray_multiscale return the
+    FIRST match to clear threshold and throw its score away on a miss -- no
+    good for answering "how close did this actually get?", which is what
+    the Image Manager's Test button needs so someone tuning a name's
+    sensitivity slider sees a real number instead of guessing. Returns None
+    only if the window can't be captured; a genuinely bad match still comes
+    back with its (low) score rather than None."""
+    load_template_grays(name, template_dir)  # raises TemplateNotFound if nothing to test against
+    haystack = capture_game_gray(hwnd, region)
+    if haystack is None:
+        return None
+    best = None
+    for scale in SCALE_FACTORS:
+        for gray, mask in _scaled_templates(name, template_dir, scale):
+            match = find_in_gray(haystack, gray, threshold=-1.0, mask=mask)
+            if match is not None and (best is None or match["score"] > best["score"]):
+                best = match
+    if best is not None and region is not None:
+        best["x"] += region[0]
+        best["y"] += region[1]
+        best["cx"] += region[0]
+        best["cy"] += region[1]
+    return best
+
+
 DEBUG_DIR = os.path.join(constants.APP_DIR, "debug")
 
 

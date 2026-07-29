@@ -5263,7 +5263,12 @@ function renderImageLibrary() {
       val.classList.remove('custom');
       saveImageThreshold(n.name, defaultT);
     });
-    thr.appendChild(thrLabel); thr.appendChild(slider); thr.appendChild(val); thr.appendChild(reset);
+    const test = document.createElement('span');
+    test.className = 'im-thr-test';
+    test.textContent = 'Test';
+    test.title = `Match "${n.name}" against the current Roblox screen and show the best score found (even below the slider)`;
+    test.addEventListener('click', () => testImageMatch(n.name, catKey, test));
+    thr.appendChild(thrLabel); thr.appendChild(slider); thr.appendChild(val); thr.appendChild(reset); thr.appendChild(test);
     card.appendChild(thr);
 
     const thumbs = document.createElement('div');
@@ -5339,6 +5344,59 @@ async function saveImageThreshold(name, value) {
     }
     addLog(`[Image Manager] "${name}" match sensitivity set to ${Number(value).toFixed(2)}.`);
   } catch (e) {}
+}
+
+// Image Manager card's "Test" button: matches that name against the CURRENT
+// Roblox screen (same grayscale/multiscale method a live Detect search
+// uses -- see vision.find_best_score) and reports the highest score found,
+// even one below the slider's threshold. Same capture dance as
+// startImageCapture -- the game only actually renders while the Dashboard is
+// showing, so hop there, let it paint, capture, hop back -- and the same
+// captureDanceActive flag so the modal stays visually put throughout.
+async function testImageMatch(name, catKey, btn) {
+  const returnScreen = currentScreen === 'dashboard' ? lastNonDashboardScreen : currentScreen;
+  const origLabel = btn ? btn.textContent : null;
+  if (btn) { btn.textContent = '...'; btn.classList.add('busy'); }
+  captureDanceActive = true;
+  let result = null;
+  try {
+    switchScreen('dashboard');
+    await new Promise(resolve => setTimeout(resolve, 400));
+    try {
+      result = await pywebview.api.test_image_match(catKey, name);
+    } catch (e) {}
+    switchScreen(returnScreen);
+  } finally {
+    captureDanceActive = false;
+    if (btn) { btn.textContent = origLabel; btn.classList.remove('busy'); }
+  }
+  if (!result || !result.ok) {
+    const reason = (result && result.reason) || 'error';
+    addLog(`[Image Manager] Couldn't test "${name}": ${reason}`);
+    showToast(`Couldn't test "${name}": ${reason}`, true);
+    return;
+  }
+  const pct = (result.score * 100).toFixed(1);
+  addLog(`[Image Manager] "${name}" best match against the current screen: ${pct}% (raw score ${result.score.toFixed(4)}).`);
+  showToast(`"${name}" best match: ${pct}%`);
+}
+
+// Small self-dismissing notice in the corner -- used by testImageMatch so the
+// headline number is visible without having to go read the log strip. Not a
+// blocking modal on purpose: this is a quick "here's a number" readout, not a
+// decision the user needs to act on.
+let toastTimer = null;
+function showToast(message, isError) {
+  let el = document.getElementById('app-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'app-toast';
+    document.body.appendChild(el);
+  }
+  el.textContent = message;
+  el.className = 'app-toast visible' + (isError ? ' error' : '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.className = 'app-toast'; }, 3200);
 }
 
 async function startImageCapture(prefillName, catKey) {

@@ -48,10 +48,10 @@ class Mouse:
     def click(self, x: int = None, y: int = None, button: str = "left", hold: float = 0.05) -> None:
         if x is not None and y is not None:
             self.move_to(x, y)
-            time.sleep(0.01)
+            time.sleep(0.05)
+            self.nudge(1,0)
+            time.sleep(0.05)
             self.nudge(-1,0)
-            time.sleep(0.005)
-            self.nudge()
         self.down(button)
         time.sleep(hold)
         self.up(button)

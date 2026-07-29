@@ -2378,6 +2378,30 @@ class Api:
         vision.set_name_thresholds(thresholds)  # live, no restart
         return {"ok": True, "threshold": thresholds.get(name, vision.DEFAULT_THRESHOLD)}
 
+    def test_image_match(self, category: str, name: str) -> dict:
+        """Image Manager's Test button: matches every variant of `name`
+        against the CURRENT Roblox screen using the exact same grayscale/
+        multiscale method a live Detect block search uses (see
+        vision.find_best_score), and reports the highest score found --
+        even one that falls short of the name's configured threshold. Lets
+        someone read the real number instead of guessing why a search isn't
+        firing. Requires the game to actually be visible on screen (same
+        as get_roblox_snapshot) -- the JS side hops to the Dashboard first."""
+        from core import vision
+        root = self._image_manager_root(category)
+        if not root:
+            return {"ok": False, "reason": "bad_category"}
+        hwnd = self.game_hwnd
+        if not hwnd or not wm.is_window(hwnd):
+            return {"ok": False, "reason": "no_roblox"}
+        try:
+            match = vision.find_best_score(hwnd, name, template_dir=root)
+        except vision.TemplateNotFound as exc:
+            return {"ok": False, "reason": str(exc)}
+        if match is None:
+            return {"ok": False, "reason": "capture_failed"}
+        return {"ok": True, "score": match["score"]}
+
     def capture_image_search_screen(self) -> dict:
         # The Capture button: one frozen screenshot of the docked Roblox
         # window, shown on the crop canvas. Reuses get_roblox_snapshot's
