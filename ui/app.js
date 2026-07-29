@@ -3366,6 +3366,12 @@ const BLOCK_TYPES = {
   sell_unit:          { label: 'Sell Unit',         group: 'Units',  color: 'var(--rose)',  params: [] },
   auto_upgrade_unit:  { label: 'Auto Upgrade Unit', group: 'Units',  color: 'var(--amber)', params: [] },
   target_priority:    { label: 'Target Priority',   group: 'Units',  color: 'var(--brand)', params: [] },
+  // Clicks a placed unit by its actual tracked position (#index), not a
+  // fixed x/y -- for a Place Unit block with "Ignore Highlight" off, the
+  // unit doesn't land on the same spot every time, so a raw Click block
+  // can't reliably select it. This resolves wherever the unit actually
+  // ended up. Bespoke controls: renderClickUnitControls().
+  click_unit:         { label: 'Click Unit',        group: 'Units',  color: 'var(--slate)', params: [] },
   // Which walk this routine uses to get to its spot before Pre Start's other
   // blocks run -- Auto (the map's own default) or a recorded Custom path.
   // Used to be a permanent pinned row instead of a real reorderable block,
@@ -3405,6 +3411,16 @@ const BLOCK_TYPES = {
   // macro's one branching block. Bespoke controls: renderDetectControls();
   // runs via core.detect on the Python side. Allowed in both phases.
   detect:             { label: 'Detect',            group: 'Logic',  color: 'var(--sky)',   params: [] },
+  // Names (or creates) a boolean variable, read later by an If block --
+  // params.name is a free-typed name (same text field Place Unit's name
+  // uses), params.value is 'True'/'False'. Bespoke controls:
+  // renderSetBooleanControls(); see core.runner_blocks._run_set_boolean_tick.
+  set_boolean:        { label: 'Set Boolean',       group: 'Logic',  color: 'var(--slate)', params: [] },
+  // Structurally identical to Detect (same nested Then/Else branches, same
+  // core.detect.flatten jump shape) but branches on a Set Boolean variable
+  // instead of an image search. Bespoke controls: renderIfControls(); runs
+  // via core.runner_blocks._evaluate_if. Allowed in both phases.
+  if:                 { label: 'If',                group: 'Logic',  color: 'var(--sky)',   params: [] },
 };
 
 // Two phases: Pre Start (walk to your spot, place starter units, flip any
@@ -3429,7 +3445,7 @@ const PHASE_ALLOWED = {
   // path) is a normal addable block, allowed in BOTH phases -- you can drop
   // several into Pre Start to walk between multiple starter-placement spots
   // before the match begins. The Loop phases take the same set as Battle.
-  prestart: ['place_unit', 'setting_change', 'auto_upgrade_unit', 'target_priority', 'walk', 'click', 'wait_ms', 'send_key', 'detect'],
+  prestart: ['place_unit', 'setting_change', 'auto_upgrade_unit', 'target_priority', 'click_unit', 'walk', 'click', 'wait_ms', 'send_key', 'detect', 'set_boolean', 'if'],
   battle: _BATTLE_ALLOWED,
   loop_a: _BATTLE_ALLOWED,
   loop_b: _BATTLE_ALLOWED,
@@ -3474,11 +3490,15 @@ function newBlockId() {
 //                                                  e.g. 'battle|d1|then|d2|else'
 function containerPhase(key) { return key.split('|')[0]; }
 
+// Branching block types: both carry nested then/else lists, addressed the
+// same way in container keys (see the comment above containerPhase).
+const BRANCHING_TYPES = ['detect', 'if'];
+
 function resolveContainer(key) {
   const parts = key.split('|');
   let list = creationPhases[parts[0]] || null;
   for (let i = 1; list && i + 1 < parts.length; i += 2) {
-    const b = list.find(x => x.id === parts[i] && x.type === 'detect');
+    const b = list.find(x => x.id === parts[i] && BRANCHING_TYPES.includes(x.type));
     if (!b) return null;
     if (!Array.isArray(b[parts[i + 1]])) b[parts[i + 1]] = [];
     list = b[parts[i + 1]];
@@ -3502,7 +3522,7 @@ function _findInContainer(list, key, id) {
   for (let i = 0; i < list.length; i++) {
     const b = list[i];
     if (b.id === id) return { phase: containerPhase(key), idx: i, container: list, key, block: b };
-    if (b.type === 'detect') {
+    if (BRANCHING_TYPES.includes(b.type)) {
       for (const branch of ['then', 'else']) {
         const hit = _findInContainer(b[branch] || [], `${key}|${b.id}|${branch}`, id);
         if (hit) return hit;
@@ -3533,15 +3553,18 @@ function addBlock(type, key, atIndex) {
   if (type === 'walk_path') { block.mode = 'auto'; block.pathName = ''; }
   if (type === 'send_key') { block.key = ''; }
   if (type === 'upgrade_unit') { block.params.index = ''; block.params.times = 1; }
-  if (type === 'auto_upgrade_unit') { block.params.index = ''; block.params.priority = 1; }
+  if (type === 'auto_upgrade_unit') { block.params.index = ''; block.params.priority = 1; block.hotkey = ''; block.useKey = false; }
   if (type === 'sell_unit') { block.params.index = ''; }
   if (type === 'target_priority') { block.params.index = ''; block.params.priority = 'Boss'; }
+  if (type === 'click_unit') { block.params.index = ''; }
   if (type === 'detect') {
     Object.assign(block, {
       image: '', advanced: false, mode: 'single', images: [], logic: 'and',
       expr: '', region: null, threshold: null, showAll: false, then: [], else: [],
     });
   }
+  if (type === 'set_boolean') { block.params.name = ''; block.params.value = 'True'; }
+  if (type === 'if') { Object.assign(block, { boolName: '', then: [], else: [] }); }
   const list = resolveContainer(key);
   if (!list) return;
   if (atIndex == null) list.push(block);
@@ -3593,7 +3616,7 @@ function cloneBlock(id) {
   renderPhases();
 }
 
-// A fresh-id copy of a block. Detect blocks recurse into then/else so the
+// A fresh-id copy of a block. Detect/If blocks recurse into then/else so the
 // clone's nested blocks get their own ids too (sharing the arrays would make
 // edits to one copy silently change the other).
 function deepCloneBlock(src) {
@@ -3601,6 +3624,8 @@ function deepCloneBlock(src) {
   if (src.type === 'detect') {
     copy.images = [...(src.images || [])];
     copy.region = src.region ? { ...src.region } : null;
+  }
+  if (BRANCHING_TYPES.includes(src.type)) {
     copy.then = (src.then || []).map(deepCloneBlock);
     copy.else = (src.else || []).map(deepCloneBlock);
   }
@@ -3641,6 +3666,18 @@ function toggleRetryUntilPlaced(id) {
   if (!loc) return;
   const block = loc.container[loc.idx];
   block.retryUntilPlaced = !block.retryUntilPlaced;
+  renderPhases();
+}
+
+// Auto Upgrade Unit "Use Key": press a hotkey (priority) times instead of
+// clicking the cycling priority icon -- see _run_auto_upgrade_use_key in
+// the runner. No hotkey set still falls back to the normal click behavior
+// even with this on.
+function toggleAutoUpgradeUseKey(id) {
+  const loc = findBlockLocation(id);
+  if (!loc) return;
+  const block = loc.container[loc.idx];
+  block.useKey = !block.useKey;
   renderPhases();
 }
 
@@ -4146,16 +4183,36 @@ function listPlacedUnits() {
   const out = [];
   let n = 0;
   // Numbered in the same static order core.detect.flatten stamps _ordinal:
-  // both phases in order, descending into each Detect's then before its else,
-  // so "unit #N" means the same placement in the editor and at runtime.
+  // both phases in order, descending into each Detect/If's then before its
+  // else, so "unit #N" means the same placement in the editor and at runtime.
   const walk = (list) => {
     for (const b of list) {
       if (b.type === 'place_unit') { n++; out.push({ n, name: b.params.name || '' }); }
-      else if (b.type === 'detect') { walk(b.then || []); walk(b.else || []); }
+      else if (BRANCHING_TYPES.includes(b.type)) { walk(b.then || []); walk(b.else || []); }
     }
   };
   for (const phase of PHASES) walk(creationPhases[phase]);
   return out;
+}
+
+// Every distinct variable name set by a Set Boolean block anywhere in the
+// routine, in order of first appearance -- the option list for If's dropdown.
+// Same traversal as listPlacedUnits() above.
+function listBooleanNames() {
+  const names = [];
+  const seen = new Set();
+  const walk = (list) => {
+    for (const b of list) {
+      if (b.type === 'set_boolean') {
+        const n = (b.params.name || '').trim();
+        if (n && !seen.has(n)) { seen.add(n); names.push(n); }
+      } else if (BRANCHING_TYPES.includes(b.type)) {
+        walk(b.then || []); walk(b.else || []);
+      }
+    }
+  };
+  for (const phase of PHASES) walk(creationPhases[phase]);
+  return names;
 }
 
 function renderUnitIndexSelect(b, key) {
@@ -4190,8 +4247,17 @@ function renderAutoUpgradeControls(b) {
   const current = String(b.params.priority ?? 1);
   const options = AUTO_UPGRADE_PRIORITIES.map(p =>
     `<option value="${p}" ${p === current ? 'selected' : ''}>${p}</option>`).join('');
+  const useKey = `<button type="button" class="block-mod-btn ${b.useKey ? 'on' : ''} tooltip-side" data-tooltip="Instead of clicking the priority icon, click the unit then press Hotkey this many times. No hotkey set falls back to clicking." onclick="toggleAutoUpgradeUseKey('${b.id}')">Use Key</button>`;
+  const hotkey = blkField('Hotkey', `<button type="button" class="keybind-btn" onclick="startBlockHotkeyCapture('${b.id}', 'hotkey', this)">${b.hotkey ? b.hotkey.toUpperCase() : 'Set key'}</button>`);
   return blkField('Unit', renderUnitIndexSelect(b, 'index'))
-    + blkField('Priority', `<select class="block-input" style="width:auto;" onchange="updateBlockParam('${b.id}', 'priority', this.value)">${options}</select>`);
+    + blkField('Priority', `<select class="block-input" style="width:auto;" onchange="updateBlockParam('${b.id}', 'priority', this.value)">${options}</select>`)
+    + useKey + hotkey;
+}
+
+// Click Unit: which placed unit (#index) to click -- same picker as
+// Sell/Upgrade/Auto Upgrade, no other fields.
+function renderClickUnitControls(b) {
+  return blkField('Unit', renderUnitIndexSelect(b, 'index'));
 }
 
 // Target Priority: which placed unit (#index) + target priority mode (First, Last, Strongest, Boss, Weakest, Shielded, Fastest, None).
@@ -4205,6 +4271,18 @@ function renderTargetPriorityControls(b) {
     + blkField('Target', `<select class="block-input" style="width:auto;" onchange="updateBlockParam('${b.id}', 'priority', this.value)">${options}</select>`);
 }
 
+// Set Boolean: a free-typed variable name (same text field Place Unit's
+// name uses) + True/False, read later by an If block (see listBooleanNames,
+// renderIfControls, core.runner_blocks._run_set_boolean_tick).
+function renderSetBooleanControls(b) {
+  const name = blkField('Name', `<input class="block-input" style="width:130px;" type="text" value="${escapeHtml(b.params.name)}" placeholder="variable name" oninput="updateBlockParam('${b.id}', 'name', this.value)">`);
+  const current = String(b.params.value ?? 'True');
+  const options = ['True', 'False'].map(v =>
+    `<option value="${v}" ${v === current ? 'selected' : ''}>${v}</option>`).join('');
+  const value = blkField('Value', `<select class="block-input" style="width:auto;" onchange="updateBlockParam('${b.id}', 'value', this.value)">${options}</select>`);
+  return name + value;
+}
+
 // `key` is the container key the block lives in (a phase, or a Detect branch
 // -- see findBlockLocation), threaded through every drag/drop handler so a row
 // knows which list it belongs to.
@@ -4212,6 +4290,7 @@ function renderBlockRow(b, key) {
   const def = BLOCK_TYPES[b.type];
   const phase = containerPhase(key);
   if (b.type === 'detect') return renderDetectRow(b, key);
+  if (b.type === 'if') return renderIfRow(b, key);
   // place_unit and click render ALL their fields bespoke (labeled X/Y +
   // the Set picker button) -- the generic anonymous param inputs would
   // duplicate them.
@@ -4226,7 +4305,9 @@ function renderBlockRow(b, key) {
     : b.type === 'upgrade_unit' ? renderUpgradeControls(b)
     : b.type === 'auto_upgrade_unit' ? renderAutoUpgradeControls(b)
     : b.type === 'sell_unit' ? renderSellUnitControls(b)
-    : b.type === 'target_priority' ? renderTargetPriorityControls(b) : '';
+    : b.type === 'target_priority' ? renderTargetPriorityControls(b)
+    : b.type === 'click_unit' ? renderClickUnitControls(b)
+    : b.type === 'set_boolean' ? renderSetBooleanControls(b) : '';
   const entering = enteringBlockIds.has(b.id) ? ' entering' : '';
   // Walk Path is the one unique pinned block: the sole Pre Start copy
   // (legacy templates can still carry extras, which render as normal
@@ -4317,6 +4398,54 @@ function renderDetectBranch(b, key, branch, label, sub) {
            ondrop="onCanvasDrop(event, '${childKey}')">${body}</div>
     </div>
   `;
+}
+
+// An If block: same nested Then/Else drop-zones as Detect (renderDetectBranch
+// is generic over both -- it only ever reads b.then/b.else), just with a
+// single dropdown picking which Set Boolean variable to branch on instead of
+// Detect's image/condition controls. See core.runner_blocks._evaluate_if.
+function renderIfRow(b, key) {
+  const def = BLOCK_TYPES.if;
+  const entering = enteringBlockIds.has(b.id) ? ' entering' : '';
+  return `
+    <div class="block-row block-detect${entering}" style="--blk: ${def.color};" draggable="true" data-id="${b.id}"
+         ondragstart="event.stopPropagation(); if (['INPUT','SELECT','BUTTON','TEXTAREA'].includes(event.target.tagName)) { event.preventDefault(); return false; } event.dataTransfer.setData('block-reorder', '${b.id}')"
+         ondragover="onBlockRowDragOver(event, '${key}', '${b.id}')"
+         ondrop="onBlockDrop(event, '${key}', '${b.id}')">
+      <div class="detect-head">
+        <span class="block-drag-handle">&#8942;&#8942;</span>
+        <span class="block-label">${def.label}</span>
+        ${renderIfControls(b)}
+        <span class="flex-1"></span>
+        <div class="block-actions">
+          <span class="block-clone" onclick="cloneBlock('${b.id}')" data-tooltip="Clone">&#10697;</span>
+          <span class="block-delete" onclick="removeBlock('${b.id}')" data-tooltip="Remove">&times;</span>
+        </div>
+      </div>
+      <div class="detect-branches if-branches">
+        ${renderDetectBranch(b, key, 'then', 'Then', 'true')}
+        ${renderDetectBranch(b, key, 'else', 'Else', 'false')}
+      </div>
+    </div>
+  `;
+}
+
+function renderIfControls(b) {
+  const names = listBooleanNames();
+  const options = names.map(n =>
+    `<option value="${escapeHtml(n)}" ${b.boolName === n ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('');
+  return `<div class="detect-controls">
+    <select class="block-input" style="width:auto;" onchange="setIfBoolName('${b.id}', this.value)">
+      <option value="">Variable...</option>${options}
+    </select>
+  </div>`;
+}
+
+function setIfBoolName(id, name) {
+  const loc = findBlockLocation(id);
+  if (!loc) return;
+  loc.container[loc.idx].boolName = name;
+  renderPhases();
 }
 
 // ---------------------------------------------------------------------------
@@ -5878,10 +6007,10 @@ function moveBlockToContainer(id, key, toIdx) {
     addLog(`[Macro Manager] "${BLOCK_TYPES[b.type].label}" can't go in ${PHASE_LABELS[phase] || phase}.`);
     return;
   }
-  // Dropping a Detect into its own then/else (directly or nested) would make
-  // it contain itself -- the key carries every ancestor Detect's id, so this
+  // Dropping a Detect/If into its own then/else (directly or nested) would
+  // make it contain itself -- the key carries every ancestor's id, so this
   // catches it at any depth.
-  if (b.type === 'detect' && key.split('|').includes(id)) return;
+  if (BRANCHING_TYPES.includes(b.type) && key.split('|').includes(id)) return;
   const dest = resolveContainer(key);
   if (!dest) return;
   // Same-list reorder where the drop target sits AT OR AFTER the dragged
@@ -5936,13 +6065,13 @@ function currentCreationPayload() {
   return payload;
 }
 
-// One block as it's saved to disk / shared. Detect blocks carry their extra
-// fields AND recurse into then/else so nested groups round-trip.
+// One block as it's saved to disk / shared. Detect/If blocks carry their
+// extra fields AND recurse into then/else so nested groups round-trip.
 function serializeBlock(b) {
   const out = {
     type: b.type, params: b.params, once: b.once, kind: b.kind, value: b.value, hotkey: b.hotkey,
     mode: b.mode, pathName: b.pathName, ignoreHighlight: b.ignoreHighlight, retryUntilPlaced: b.retryUntilPlaced,
-    sprint: b.sprint, key: b.key,
+    sprint: b.sprint, key: b.key, useKey: b.useKey, boolName: b.boolName,
   };
   if (b.type === 'detect') {
     out.image = b.image || '';
@@ -5953,6 +6082,8 @@ function serializeBlock(b) {
     out.region = b.region ? { ...b.region } : null;
     out.threshold = typeof b.threshold === 'number' ? b.threshold : null;
     out.showAll = !!b.showAll;
+  }
+  if (BRANCHING_TYPES.includes(b.type)) {
     out.then = (b.then || []).map(serializeBlock);
     out.else = (b.else || []).map(serializeBlock);
   }
@@ -6140,6 +6271,10 @@ function blockFromSaved(b) {
   }
   if (b.type === 'walk_path' || b.type === 'walk') block.sprint = !!b.sprint;
   if (b.type === 'send_key') block.key = b.key || '';
+  if (b.type === 'auto_upgrade_unit') {
+    block.hotkey = b.hotkey || '';
+    block.useKey = !!b.useKey;
+  }
   if (b.type === 'detect') {
     block.image = b.image || '';
     block.advanced = !!b.advanced;
@@ -6150,6 +6285,9 @@ function blockFromSaved(b) {
     block.region = (b.region && typeof b.region === 'object') ? { ...b.region } : null;
     block.threshold = typeof b.threshold === 'number' ? b.threshold : null;
     block.showAll = !!b.showAll;
+  }
+  if (b.type === 'if') block.boolName = b.boolName || '';
+  if (BRANCHING_TYPES.includes(b.type)) {
     block.then = (Array.isArray(b.then) ? b.then : []).map(blockFromSaved);
     block.else = (Array.isArray(b.else) ? b.else : []).map(blockFromSaved);
   }

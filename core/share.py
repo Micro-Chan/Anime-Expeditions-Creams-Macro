@@ -111,12 +111,12 @@ def decode_template_code(input_str: str) -> dict:
 
 
 def _count_block_list(blocks) -> int:
-    """Length of a block list, counting a Detect block's nested then/else
+    """Length of a block list, counting a Detect/If block's nested then/else
     blocks too (each still a real block the user built)."""
     total = 0
     for b in blocks:
         total += 1
-        if isinstance(b, dict) and b.get("type") == "detect":
+        if isinstance(b, dict) and b.get("type") in ("detect", "if"):
             total += _count_block_list(b.get("then") or []) + _count_block_list(b.get("else") or [])
     return total
 
@@ -141,7 +141,7 @@ def count_template_blocks(blocks) -> int:
 def _iter_blocks(blocks):
     """Yield every block dict in a template, whatever shape its container is:
     a flat list, a phase dict (prestart/battle/loop_a/loop_b/legacy -- any
-    list-valued key), and a Detect block's nested then/else. Mirrors the
+    list-valued key), and a Detect/If block's nested then/else. Mirrors the
     traversal count_template_blocks uses so both agree on what counts as a
     block. Non-block list values (e.g. an equipment list) get walked too but
     harmlessly -- callers filter by block "type"."""
@@ -155,7 +155,7 @@ def _iter_blocks(blocks):
         if not isinstance(b, dict):
             continue
         yield b
-        if b.get("type") == "detect":
+        if b.get("type") in ("detect", "if"):
             yield from _iter_blocks(b.get("then") or [])
             yield from _iter_blocks(b.get("else") or [])
 

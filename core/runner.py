@@ -162,6 +162,10 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, ExpeditionOps, BlockOps)
         # block skipped via "Once" on a repeat keeps whatever position its
         # first placement recorded rather than losing it.
         self._placed_unit_positions = {}
+        # Set Boolean variables (name -> bool), read by If blocks via
+        # _evaluate_if. Reset fresh each match in _run_prestart_blocks, same
+        # lifecycle as _placed_unit_positions above.
+        self._macro_booleans = {}
         # Whether Left Shift is currently being held down for a "quick
         # place" chain (see _run_place_unit_block) -- true from right
         # before the FIRST of a run of consecutive same-unit Place Unit
@@ -300,6 +304,7 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, ExpeditionOps, BlockOps)
                     self._battle_block_state = {}
                     self._last_unit_ordinal = 0
                     self._quick_place_shift_down = False
+                    self._macro_booleans = {}
                     # Ticks continuously (same as a real match's own poll
                     # loop) instead of running through the block list once
                     # and stopping -- Battle blocks are built to keep

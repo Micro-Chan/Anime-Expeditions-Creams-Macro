@@ -94,6 +94,7 @@ def test_infinite_task_summary_shows_its_exit_wave(tmp_path):
 _REMOVE_HARNESS = """
 const world = () => new Function(`
   const PHASES = ['prestart','battle'];
+  const BRANCHING_TYPES = ['detect', 'if'];
   let recordingBlockId = null;
   let creationPhases = { prestart: [], battle: ['A','B','C','D'].map(id => ({ id, type: 'wait_ms', params: {} })) };
   function renderPhases() {}
@@ -638,6 +639,7 @@ def test_a_file_with_no_macros_reports_that_instead_of_importing_nothing(tmp_pat
 
 _DIRTY_HARNESS = """
 global.PHASES = ['prestart', 'battle'];
+global.BRANCHING_TYPES = ['detect', 'if'];
 let nameValue = 'Boss Rush';
 global.document = { getElementById: () => ({ get value() { return nameValue; } }) };
 global.creationTeam = ''; global.creationEquipment = 'include';
@@ -904,6 +906,7 @@ def test_both_dock_and_skip_release_it():
 def test_detect_block_round_trips_through_save_and_load(tmp_path):
     out = run_js("""
       global.newBlockId = (() => { let n = 0; return () => 'id' + (++n); })();
+      global.BRANCHING_TYPES = ['detect', 'if'];
       eval(extract('serializeBlock'));
       eval(extract('blockFromSaved'));
       const saved = {
@@ -942,6 +945,7 @@ def test_detect_block_round_trips_through_save_and_load(tmp_path):
 def test_list_placed_units_numbers_across_detect_branches(tmp_path):
     out = run_js("""
       global.PHASES = ['prestart', 'battle'];
+      global.BRANCHING_TYPES = ['detect', 'if'];
       global.creationPhases = {
         prestart: [{ type: 'place_unit', params: { name: 'A' } }],
         battle: [
@@ -959,6 +963,27 @@ def test_list_placed_units_numbers_across_detect_branches(tmp_path):
                    {'n': 3, 'name': 'C'}, {'n': 4, 'name': 'D'}]
 
 
+def test_list_placed_units_numbers_across_if_branches_too(tmp_path):
+    """listPlacedUnits walks If's then/else the same way it walks Detect's --
+    both are BRANCHING_TYPES now (see core.detect.flatten treating them the
+    same on the Python side)."""
+    out = run_js("""
+      global.PHASES = ['prestart', 'battle'];
+      global.BRANCHING_TYPES = ['detect', 'if'];
+      global.creationPhases = {
+        prestart: [],
+        battle: [
+          { type: 'if', boolName: 'ready',
+            then: [{ type: 'place_unit', params: { name: 'A' } }],
+            else: [{ type: 'place_unit', params: { name: 'B' } }] },
+        ],
+      };
+      eval(extract('listPlacedUnits'));
+      console.log(JSON.stringify(listPlacedUnits()));
+    """, tmp_path)
+    assert out == [{'n': 1, 'name': 'A'}, {'n': 2, 'name': 'B'}]
+
+
 def test_target_priority_block_type_registered(tmp_path):
     body = """
     console.log(JSON.stringify({
@@ -971,6 +996,169 @@ def test_target_priority_block_type_registered(tmp_path):
     assert out["hasBlockType"] is True
     assert out["inPrestartAllowed"] is True
     assert out["hasTargetPriorities"] is True
+
+
+def test_click_unit_block_type_registered(tmp_path):
+    body = """
+    console.log(JSON.stringify({
+        hasBlockType: src.includes("click_unit:"),
+        inPrestartAllowed: src.includes("'click_unit'"),
+        hasControls: src.includes("function renderClickUnitControls")
+    }));
+    """
+    out = run_js(body, tmp_path)
+    assert out["hasBlockType"] is True
+    assert out["inPrestartAllowed"] is True
+    assert out["hasControls"] is True
+
+
+def test_auto_upgrade_use_key_registered(tmp_path):
+    body = """
+    console.log(JSON.stringify({
+        hasToggleFn: src.includes("function toggleAutoUpgradeUseKey"),
+        hasHotkeyCapture: src.includes("startBlockHotkeyCapture('${b.id}', 'hotkey', this)")
+    }));
+    """
+    out = run_js(body, tmp_path)
+    assert out["hasToggleFn"] is True
+    assert out["hasHotkeyCapture"] is True
+
+
+def test_auto_upgrade_use_key_toggle_and_round_trip(tmp_path):
+    """toggleAutoUpgradeUseKey flips block.useKey, and both it and the
+    hotkey round-trip through serializeBlock/blockFromSaved (see
+    core.runner_blocks._run_auto_upgrade_use_key, which reads both)."""
+    out = run_js("""
+      global.newBlockId = (() => { let n = 0; return () => 'id' + (++n); })();
+      global.creationPhases = { prestart: [], battle: [
+        { id: 'b1', type: 'auto_upgrade_unit', params: { index: 1, priority: '5' }, useKey: false, hotkey: 't' },
+      ], loop_a: [], loop_b: [] };
+      global.PHASES = ['prestart', 'battle', 'loop_a', 'loop_b'];
+      global.BRANCHING_TYPES = ['detect', 'if'];
+      function findBlockLocation(id) {
+        for (const phase of PHASES) {
+          const idx = creationPhases[phase].findIndex(b => b.id === id);
+          if (idx !== -1) return { container: creationPhases[phase], idx };
+        }
+        return null;
+      }
+      global.findBlockLocation = findBlockLocation;
+      global.renderPhases = () => {};
+      eval(extract('toggleAutoUpgradeUseKey'));
+      eval(extract('serializeBlock'));
+      eval(extract('blockFromSaved'));
+
+      toggleAutoUpgradeUseKey('b1');
+      const afterToggle = creationPhases.battle[0].useKey;
+
+      const saved = serializeBlock(creationPhases.battle[0]);
+      const loaded = blockFromSaved(saved);
+      console.log(JSON.stringify({
+        afterToggle, savedUseKey: saved.useKey, savedHotkey: saved.hotkey,
+        loadedUseKey: loaded.useKey, loadedHotkey: loaded.hotkey,
+      }));
+    """, tmp_path)
+    assert out["afterToggle"] is True
+    assert out["savedUseKey"] is True
+    assert out["savedHotkey"] == "t"
+    assert out["loadedUseKey"] is True
+    assert out["loadedHotkey"] == "t"
+
+
+def test_set_boolean_and_if_block_types_registered(tmp_path):
+    body = """
+    console.log(JSON.stringify({
+        hasSetBooleanType: src.includes("set_boolean:"),
+        hasIfType: src.includes("if:"),
+        inPrestartAllowed: src.includes("'set_boolean'") && src.includes("'if'"),
+        hasSetBooleanControls: src.includes("function renderSetBooleanControls"),
+        hasIfControls: src.includes("function renderIfControls"),
+        hasIfRow: src.includes("function renderIfRow"),
+        hasListBooleanNames: src.includes("function listBooleanNames")
+    }));
+    """
+    out = run_js(body, tmp_path)
+    assert out["hasSetBooleanType"] is True
+    assert out["hasIfType"] is True
+    assert out["inPrestartAllowed"] is True
+    assert out["hasSetBooleanControls"] is True
+    assert out["hasIfControls"] is True
+    assert out["hasIfRow"] is True
+    assert out["hasListBooleanNames"] is True
+
+
+def test_list_boolean_names_walks_branches_in_order_deduped(tmp_path):
+    """listBooleanNames collects distinct Set Boolean names, first-appearance
+    order, descending into both Detect and If then/else branches -- the
+    option list If's own dropdown (renderIfControls) is built from."""
+    out = run_js("""
+      global.PHASES = ['prestart', 'battle'];
+      global.BRANCHING_TYPES = ['detect', 'if'];
+      global.creationPhases = {
+        prestart: [{ type: 'set_boolean', params: { name: 'ready', value: 'True' } }],
+        battle: [
+          { type: 'if', boolName: 'ready',
+            then: [{ type: 'set_boolean', params: { name: 'done', value: 'False' } }],
+            else: [{ type: 'set_boolean', params: { name: 'ready', value: 'False' } }] },
+          { type: 'detect', image: 'x',
+            then: [{ type: 'set_boolean', params: { name: 'extra', value: 'True' } }],
+            else: [] },
+        ],
+      };
+      eval(extract('listBooleanNames'));
+      console.log(JSON.stringify(listBooleanNames()));
+    """, tmp_path)
+    # "ready" set again in the If's else branch is a dupe -- not repeated
+    assert out == ['ready', 'done', 'extra']
+
+
+def test_if_block_round_trips_through_save_and_load(tmp_path):
+    """boolName + nested then/else all survive serializeBlock/blockFromSaved,
+    the same pair Detect's round trip already covers."""
+    out = run_js("""
+      global.newBlockId = (() => { let n = 0; return () => 'id' + (++n); })();
+      global.BRANCHING_TYPES = ['detect', 'if'];
+      eval(extract('serializeBlock'));
+      eval(extract('blockFromSaved'));
+      const saved = {
+        type: 'if', params: {}, boolName: 'ready',
+        then: [{ type: 'send_key', params: {}, key: 'q' }],
+        else: [{ type: 'wait_ms', params: { ms: 250 } }],
+      };
+      const loaded = blockFromSaved(saved);
+      const reser = serializeBlock(loaded);
+      console.log(JSON.stringify({
+        boolName: loaded.boolName,
+        thenType: loaded.then[0].type, thenKey: loaded.then[0].key,
+        elseType: loaded.else[0].type, elseMs: loaded.else[0].params.ms,
+        thenHasId: !!loaded.then[0].id,
+        reserBoolName: reser.boolName, reserThen: reser.then.length, reserElse: reser.else.length,
+      }));
+    """, tmp_path)
+    assert out['boolName'] == 'ready'
+    assert out['thenType'] == 'send_key' and out['thenKey'] == 'q'
+    assert out['elseType'] == 'wait_ms' and out['elseMs'] == 250
+    assert out['thenHasId'] is True
+    assert out['reserBoolName'] == 'ready'
+    assert out['reserThen'] == 1 and out['reserElse'] == 1
+
+
+def test_set_boolean_block_round_trips_through_save_and_load(tmp_path):
+    out = run_js("""
+      global.newBlockId = (() => { let n = 0; return () => 'id' + (++n); })();
+      global.BRANCHING_TYPES = ['detect', 'if'];
+      eval(extract('serializeBlock'));
+      eval(extract('blockFromSaved'));
+      const saved = { type: 'set_boolean', params: { name: 'ready', value: 'True' }, once: false };
+      const loaded = blockFromSaved(saved);
+      const reser = serializeBlock(loaded);
+      console.log(JSON.stringify({
+        name: loaded.params.name, value: loaded.params.value,
+        reserName: reser.params.name, reserValue: reser.params.value,
+      }));
+    """, tmp_path)
+    assert out['name'] == 'ready' and out['value'] == 'True'
+    assert out['reserName'] == 'ready' and out['reserValue'] == 'True'
 
 
 def test_loop_phases_registered(tmp_path):

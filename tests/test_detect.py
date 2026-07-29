@@ -231,3 +231,131 @@ def test_battle_tick_runs_else_branch_when_not_found(monkeypatch):
     ])
     _drive_battle(runner, flat)
     assert recorded == ["else", "after"]
+
+
+# --------------------------------------------------------------------------
+# If / Set Boolean: same branching shape as Detect, but on a named boolean
+# variable (self._macro_booleans) instead of an image search.
+# --------------------------------------------------------------------------
+def test_flatten_if_then_else_offsets_route_both_branches():
+    """If blocks flatten through the exact same jump machinery as Detect --
+    core.detect._flatten_into treats btype in ("detect", "if") identically."""
+    blocks = [
+        {"type": "if", "boolName": "ready",
+         "then": [{"type": "place_unit", "params": {}}, {"type": "wait_ms"}],
+         "else": [{"type": "place_unit", "params": {}}]},
+        {"type": "place_unit", "params": {}},
+    ]
+    flat, nxt = detect.flatten(blocks, 1)
+    types = [b["type"] for b in flat]
+    assert types == ["if", "place_unit", "wait_ms", "_jump", "place_unit", "place_unit"]
+    assert [b.get("_ordinal") for b in flat] == [None, 1, None, None, 2, 3]
+    assert nxt == 4
+    if_block, jump = flat[0], flat[3]
+    assert 0 + if_block["_else_offset"] == 4
+    assert 3 + jump["_offset"] == 5
+
+
+def test_evaluate_if_reads_macro_booleans():
+    runner = MacroRunner(MagicMock(), MagicMock(), MagicMock())
+    runner._macro_booleans = {"ready": True, "done": False}
+    assert runner._evaluate_if({"boolName": "ready"}) is True
+    assert runner._evaluate_if({"boolName": "done"}) is False
+
+
+def test_evaluate_if_no_name_or_unset_variable_is_false():
+    """No variable picked, or one no Set Boolean block has run yet, both
+    read as False -- fail-safe, same spirit as Detect's missing-image path."""
+    runner = MacroRunner(MagicMock(), MagicMock(), MagicMock())
+    runner._macro_booleans = {}
+    assert runner._evaluate_if({"boolName": ""}) is False
+    assert runner._evaluate_if({"boolName": "never_set"}) is False
+
+
+def test_run_set_boolean_tick_creates_and_overwrites():
+    runner = MacroRunner(MagicMock(), MagicMock(), MagicMock())
+    runner._macro_booleans = {}
+    logs = []
+    runner._log = logs.append
+
+    runner._run_set_boolean_tick({"params": {"name": "ready", "value": "True"}}, 1)
+    assert runner._macro_booleans == {"ready": True}
+
+    runner._run_set_boolean_tick({"params": {"name": "ready", "value": "False"}}, 2)
+    assert runner._macro_booleans == {"ready": False}
+    assert any('"ready" = True' in m for m in logs)
+    assert any('"ready" = False' in m for m in logs)
+
+
+def test_run_set_boolean_tick_no_name_skips():
+    runner = MacroRunner(MagicMock(), MagicMock(), MagicMock())
+    runner._macro_booleans = {}
+    logs = []
+    runner._log = logs.append
+
+    runner._run_set_boolean_tick({"params": {"name": "", "value": "True"}}, 1)
+    assert runner._macro_booleans == {}
+    assert any("no variable name set" in m for m in logs)
+
+
+def test_battle_tick_runs_if_then_branch_when_bool_true():
+    runner = MacroRunner(MagicMock(), MagicMock(), MagicMock())
+    runner._battle_block_index = 0
+    runner._battle_block_state = {}
+    runner._log = lambda *a, **k: None
+    runner._macro_booleans = {"ready": True}
+    recorded = []
+    runner._run_send_key_tick = lambda block, num, phase_label="Battle": recorded.append(block.get("_tag"))
+    runner._run_wait_ms_tick = lambda stop, block, num, phase_label="Battle": recorded.append(block.get("_tag"))
+
+    flat, _ = rb.detect.flatten([
+        {"type": "if", "boolName": "ready",
+         "then": [{"type": "send_key", "_tag": "then"}],
+         "else": [{"type": "send_key", "_tag": "else"}]},
+        {"type": "wait_ms", "_tag": "after"},
+    ])
+    _drive_battle(runner, flat)
+    assert recorded == ["then", "after"]
+
+
+def test_battle_tick_runs_if_else_branch_when_bool_false():
+    runner = MacroRunner(MagicMock(), MagicMock(), MagicMock())
+    runner._battle_block_index = 0
+    runner._battle_block_state = {}
+    runner._log = lambda *a, **k: None
+    runner._macro_booleans = {"ready": False}
+    recorded = []
+    runner._run_send_key_tick = lambda block, num, phase_label="Battle": recorded.append(block.get("_tag"))
+    runner._run_wait_ms_tick = lambda stop, block, num, phase_label="Battle": recorded.append(block.get("_tag"))
+
+    flat, _ = rb.detect.flatten([
+        {"type": "if", "boolName": "ready",
+         "then": [{"type": "send_key", "_tag": "then"}],
+         "else": [{"type": "send_key", "_tag": "else"}]},
+        {"type": "wait_ms", "_tag": "after"},
+    ])
+    _drive_battle(runner, flat)
+    assert recorded == ["else", "after"]
+
+
+def test_set_boolean_then_if_end_to_end():
+    """Set Boolean followed by an If reading the same name, both dispatched
+    through the real _run_battle_blocks_tick -- the two blocks actually
+    cooperating through self._macro_booleans, not just each tested alone."""
+    runner = MacroRunner(MagicMock(), MagicMock(), MagicMock())
+    runner._battle_block_index = 0
+    runner._battle_block_state = {}
+    runner._macro_booleans = {}
+    runner._log = lambda *a, **k: None
+    recorded = []
+    runner._run_send_key_tick = lambda block, num, phase_label="Battle": recorded.append(block.get("_tag"))
+
+    flat, _ = rb.detect.flatten([
+        {"type": "set_boolean", "params": {"name": "ready", "value": "True"}},
+        {"type": "if", "boolName": "ready",
+         "then": [{"type": "send_key", "_tag": "then"}],
+         "else": [{"type": "send_key", "_tag": "else"}]},
+    ])
+    _drive_battle(runner, flat)
+    assert recorded == ["then"]
+    assert runner._macro_booleans == {"ready": True}

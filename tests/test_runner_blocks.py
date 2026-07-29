@@ -242,6 +242,55 @@ def test_place_unit_with_no_position_keeps_shift_when_the_chain_continues():
     assert runner._quick_place_shift_down is True
 
 
+def test_place_unit_ignore_highlight_records_position_even_if_verify_never_confirms():
+    """Ignore Highlight means the saved x/y IS the unit's position by
+    definition -- Click Unit (and Sell/Upgrade/Target Priority/Auto Upgrade,
+    which all resolve a unit the same way) must still be able to find it even
+    when unit_exist verification never confirms the placement (no asset
+    added, a stale/occupied tile, whatever) -- the click still landed there
+    regardless of what verify saw afterward."""
+    from core.runner_blocks import BlockOps
+    from unittest.mock import MagicMock
+    from core import vision
+
+    class DummyRunner(BlockOps):
+        def __init__(self):
+            self._placed_unit_positions = {}
+            self._quick_place_shift_down = False
+            self._mouse = MagicMock()
+            self._keyboard = MagicMock()
+            self.logs = []
+        def _log(self, msg):
+            self.logs.append(msg)
+        def _set_status(self, **kw):
+            pass
+        def _checkpoint(self, stop_event):
+            return False
+        def _release_quick_place_shift(self):
+            pass
+
+    runner = DummyRunner()
+    block = {"type": "place_unit", "hotkey": "1", "ignoreHighlight": True,
+             "params": {"name": "Archer", "x": 100, "y": 200}}
+    stop_event = MagicMock(is_set=lambda: False)
+
+    # Patch the two lookups on the real vision module (not a stand-in
+    # module), so `except vision.TemplateNotFound` inside the runner still
+    # matches the exception actually raised.
+    from core import runner_blocks
+    original_find_image, original_wait_for_image = vision.find_image, vision.wait_for_image
+    vision.find_image = MagicMock(side_effect=vision.TemplateNotFound("max_placement_reached"))
+    vision.wait_for_image = MagicMock(side_effect=vision.TemplateNotFound("unit_exist"))
+    try:
+        runner._run_place_unit_block(1, stop_event, 0, 0, block, index=1, macro_name="m",
+                                      unit_ordinal=5, next_is_same_unit=False, verify=True)
+    finally:
+        vision.find_image = original_find_image
+        vision.wait_for_image = original_wait_for_image
+
+    assert runner._placed_unit_positions.get(5) == (100, 200)
+
+
 def test_run_target_priority_tick():
     from core.runner_blocks import BlockOps
     from unittest.mock import MagicMock
@@ -276,3 +325,135 @@ def test_run_target_priority_tick():
     assert done is True
     assert any("pressing R to set target priority to Boss" in log for log in runner.logs)
     assert runner._keyboard.tap.called
+
+
+def test_run_click_unit_tick():
+    from core.runner_blocks import BlockOps
+    from unittest.mock import MagicMock
+
+    class DummyRunner(BlockOps):
+        def __init__(self):
+            self._placed_unit_positions = {1: (100, 200)}
+            self._coords = {"unit_info_reset_x": 10, "unit_info_reset_y": 10}
+            self._mouse = MagicMock()
+            self._keyboard = MagicMock()
+            self.logs = []
+        def _log(self, msg):
+            self.logs.append(msg)
+        def _set_status(self, **kw):
+            pass
+        def _checkpoint(self, stop_event):
+            return False
+
+    runner = DummyRunner()
+    block = {"type": "click_unit", "params": {"index": 1}}
+    stop_event = MagicMock(is_set=lambda: False)
+
+    from core import runner_blocks
+    original_wm = runner_blocks.wm
+    runner_blocks.wm = MagicMock(get_window_rect_screen=lambda hwnd: (0, 0, 800, 600))
+    try:
+        done = runner._run_click_unit_tick(123, stop_event, block, 1)
+    finally:
+        runner_blocks.wm = original_wm
+
+    assert done is True
+    assert any("clicked unit at (100, 200)" in log for log in runner.logs)
+    runner._mouse.click.assert_any_call(100, 200)
+
+
+def test_run_click_unit_tick_no_unit_selected():
+    from core.runner_blocks import BlockOps
+    from unittest.mock import MagicMock
+
+    class DummyRunner(BlockOps):
+        def __init__(self):
+            self._placed_unit_positions = {}
+            self._mouse = MagicMock()
+            self.logs = []
+        def _log(self, msg):
+            self.logs.append(msg)
+
+    runner = DummyRunner()
+    block = {"type": "click_unit", "params": {"index": ""}}
+    stop_event = MagicMock(is_set=lambda: False)
+
+    done = runner._run_click_unit_tick(123, stop_event, block, 1)
+
+    assert done is True
+    assert not runner._mouse.click.called
+
+
+def _use_key_runner():
+    from core.runner_blocks import BlockOps
+    from unittest.mock import MagicMock
+
+    class DummyRunner(BlockOps):
+        def __init__(self):
+            self._coords = {"unit_info_reset_x": 10, "unit_info_reset_y": 10}
+            self._mouse = MagicMock()
+            self._keyboard = MagicMock()
+            self.logs = []
+        def _log(self, msg):
+            self.logs.append(msg)
+        def _set_status(self, **kw):
+            pass
+        def _checkpoint(self, stop_event):
+            return False
+
+    return DummyRunner()
+
+
+def test_run_auto_upgrade_use_key_presses_hotkey_n_times_for_priority():
+    """Use Key mode: priority 5 means 5 presses of the configured hotkey,
+    not clicks around the priority_upgrade icon."""
+    from core import keys
+
+    runner = _use_key_runner()
+    block = {"params": {"priority": "5"}, "hotkey": "t"}
+    stop_event = MagicMock(is_set=lambda: False)
+
+    done = runner._run_auto_upgrade_use_key(stop_event, block, "label", 0, 0, "t")
+
+    assert done is True
+    assert runner._keyboard.tap.call_count == 5
+    assert runner._keyboard.tap.call_args_list[0].args[0] == keys.key_name_to_vk("t")
+
+
+def test_run_auto_upgrade_use_key_none_priority_presses_nothing():
+    runner = _use_key_runner()
+    block = {"params": {"priority": "None"}, "hotkey": "t"}
+    stop_event = MagicMock(is_set=lambda: False)
+
+    done = runner._run_auto_upgrade_use_key(stop_event, block, "label", 0, 0, "t")
+
+    assert done is True
+    assert not runner._keyboard.tap.called
+
+
+def test_run_auto_upgrade_unit_tick_ignores_use_key_without_a_hotkey():
+    """"If no hotkey is set it will default to USE KEY toggle off behaviour,
+    even if USE KEY is on" -- so with useKey True but no hotkey, the normal
+    click-the-priority-icon path must still run (proven here by it reaching
+    the vision search that path is the only one that calls)."""
+    from unittest.mock import MagicMock
+    from core import runner_blocks, vision
+
+    runner = _use_key_runner()
+    runner._placed_unit_positions = {1: (100, 200)}
+    block = {"params": {"index": 1, "priority": "3"}, "useKey": True, "hotkey": ""}
+    stop_event = MagicMock(is_set=lambda: False)
+
+    original_wm = runner_blocks.wm
+    original_find_image_any = vision.find_image_any
+    runner_blocks.wm = MagicMock(get_window_rect_screen=lambda hwnd: (0, 0, 800, 600))
+    vision.find_image_any = MagicMock(side_effect=vision.TemplateNotFound("priority_upgrade"))
+    try:
+        done = runner._run_auto_upgrade_unit_tick(123, stop_event, block, 1)
+    finally:
+        runner_blocks.wm = original_wm
+        vision.find_image_any = original_find_image_any
+
+    assert done is True
+    assert not runner._keyboard.tap.called
+    assert any("priority_upgrade" in log for log in runner.logs)

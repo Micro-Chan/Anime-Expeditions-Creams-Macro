@@ -1971,6 +1971,8 @@ li.fail .onb-ingame-name { color: var(--rose); }
 .detect-head { display: flex; align-items: center; gap: 8px; }
 .detect-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .detect-branches { display: flex; gap: 10px; }
+/* If block only: Then/Else stacked top-to-bottom instead of side-by-side. */
+.if-branches { flex-direction: column; }
 .detect-branch { flex: 1; min-width: 0; }
 .detect-branch-label {
   font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em;

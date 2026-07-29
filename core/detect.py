@@ -1,13 +1,18 @@
-"""Detect block -- the macro's one branching primitive.
+"""Detect/If blocks -- the macro's branching primitives.
 
 A `detect` block searches for an image (or a combination of images, or a raw
 condition expression) and runs one of two nested block lists: `then` when the
-condition holds, `else` when it doesn't.
+condition holds, `else` when it doesn't. An `if` block is structurally
+identical (same then/else nesting, same flatten/jump shape below) but
+branches on a named boolean variable (set by a Set Boolean block, read via
+runner_blocks._evaluate_if) instead of an image search -- see
+runner_blocks._run_battle_blocks_tick/_run_prestart_blocks, which evaluate
+the two differently but flatten them through the exact same code here.
 
 The runner executes a FLAT block list with a single index (see
 core.runner_blocks). To leave that engine essentially unchanged, flatten()
-expands each detect block into a flat instruction stream with two synthetic
-control ops:
+expands each detect/if block into a flat instruction stream with two
+synthetic control ops:
 
     detect(_else_offset=E)     # evaluate; if the condition is FALSE, the
      ...then blocks...          #   engine does index += E to land on the
@@ -30,11 +35,11 @@ from . import vision
 def flatten(blocks, ordinal_start: int = 1):
     """(flat_list, next_ordinal).
 
-    Expand nested detect then/else into one flat list with detect/_jump
-    control entries, and stamp every place_unit (nested ones included) with
-    its positional `_ordinal`, continuing from `ordinal_start`. Non-detect
-    blocks pass through. next_ordinal is where a later phase should resume the
-    count -- Battle continues Pre Start's unit numbering."""
+    Expand nested detect/if then/else into one flat list with detect-or-if/
+    _jump control entries, and stamp every place_unit (nested ones included)
+    with its positional `_ordinal`, continuing from `ordinal_start`. Other
+    blocks pass through unchanged. next_ordinal is where a later phase should
+    resume the count -- Battle continues Pre Start's unit numbering."""
     flat = []
     ordinal = _flatten_into(blocks or [], flat, ordinal_start)
     return flat, ordinal
@@ -52,7 +57,7 @@ def _flatten_into(blocks, flat, ordinal):
             block["_ordinal"] = ordinal
             ordinal += 1
             flat.append(block)
-        elif btype == "detect":
+        elif btype in ("detect", "if"):
             ctrl = dict(block)
             flat.append(ctrl)
             detect_index = len(flat) - 1

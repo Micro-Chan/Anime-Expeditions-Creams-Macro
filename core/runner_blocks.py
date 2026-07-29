@@ -138,17 +138,23 @@ class BlockOps:
         while self._battle_block_index < len(battle_blocks):
             block = battle_blocks[self._battle_block_index]
             btype = block.get("type")
-            # Control ops that core.detect.flatten injected for detect
+            # Control ops that core.detect.flatten injected for detect/if
             # then/else groups. _jump is pure index bookkeeping (skipping the
             # else branch after then ran) -- no game action, so it never
-            # costs a tick. detect evaluates its condition once and jumps into
-            # the branch NOT taken when the condition is false.
+            # costs a tick. detect/if evaluate their condition once and jump
+            # into the branch NOT taken when it's false.
             if btype == "_jump":
                 self._battle_block_index += block.get("_offset", 1)
                 continue
             if btype == "detect":
                 found, matches = detect.evaluate(self, hwnd, block)
                 self._log_detect_outcome(block, found, matches, self._battle_block_index + 1, "Battle")
+                self._battle_block_index += 1 if found else block.get("_else_offset", 1)
+                self._battle_block_state = {}
+                return
+            if btype == "if":
+                found = self._evaluate_if(block)
+                self._log_if_outcome(block, found, self._battle_block_index + 1, "Battle")
                 self._battle_block_index += 1 if found else block.get("_else_offset", 1)
                 self._battle_block_state = {}
                 return
@@ -180,6 +186,9 @@ class BlockOps:
                 self._battle_block_state = {}
             elif btype == "auto_upgrade_unit":
                 done = self._run_auto_upgrade_unit_tick(hwnd, stop_event, block, self._battle_block_index + 1)
+                self._battle_block_state = {}
+            elif btype == "click_unit":
+                done = self._run_click_unit_tick(hwnd, stop_event, block, self._battle_block_index + 1)
                 self._battle_block_state = {}
             elif btype == "place_unit":
                 # Mid-battle placement (a reinforcement dropped in later,
@@ -227,6 +236,10 @@ class BlockOps:
                 self._battle_block_state = {}
             elif btype == "leave_at_minute":
                 self._run_leave_at_minute_tick(hwnd, stop_event, block, self._battle_block_index + 1)
+                done = True
+                self._battle_block_state = {}
+            elif btype == "set_boolean":
+                self._run_set_boolean_tick(block, self._battle_block_index + 1)
                 done = True
                 self._battle_block_state = {}
             else:
@@ -453,6 +466,28 @@ class BlockOps:
         self._keyboard.tap(ord("X"))
         return True
 
+    def _run_click_unit_tick(self, hwnd, stop_event: threading.Event, block: dict, block_num: int,
+                              phase_label: str = "Battle") -> bool:
+        """One-shot: click the unit at its actual placed position (tracked
+        by #index, the same lookup Sell/Upgrade/Target Priority/Auto Upgrade
+        Unit use) and nothing else. Exists for Place Unit blocks with
+        "Ignore Highlight" off -- there the unit doesn't reliably land on
+        the block's saved x/y, so a plain Click block can miss it, while
+        this always resolves wherever the unit actually ended up."""
+        label = f'{phase_label} block #{block_num} (Click Unit)'
+        pos = self._placed_unit_click_point(block, label)
+        if pos is None:
+            return True
+
+        left, top, _, _ = wm.get_window_rect_screen(hwnd)
+        self._mouse.click(left + self._coords["unit_info_reset_x"], top + self._coords["unit_info_reset_y"])
+        time.sleep(0.1)
+
+        self._set_status(action="Selecting unit...")
+        self._mouse.click(left + pos[0], top + pos[1])
+        self._log(f'{label}: clicked unit at {pos}.')
+        return True
+
     def _run_target_priority_tick(self, hwnd, stop_event: threading.Event, block: dict, block_num: int,
                                    phase_label: str = "Battle") -> bool:
         """One-shot: click the unit, open unit info panel, tap R to set/cycle target priority.
@@ -614,7 +649,14 @@ class BlockOps:
         on its info panel) to open its priority menu, click the configured
         priority row (or Disable for "None"), then a reset click. Always
         "done" after one try -- setting a priority isn't a repeated action
-        the way Upgrade Unit's clicks are."""
+        the way Upgrade Unit's clicks are.
+
+        "Use Key" (block.useKey + block.hotkey) replaces all of that with a
+        keypress: after the same unit click, press the configured hotkey
+        `priority` times instead of hunting for the priority_upgrade icon --
+        for a setup where priority is actually bound to a key rather than
+        that click-to-cycle control. No hotkey set falls back to the normal
+        click behavior even with Use Key on (see _run_auto_upgrade_use_key)."""
         label = f'Battle block #{block_num} (Auto Upgrade Unit)'
         pos = self._placed_unit_click_point(block, label)
         if pos is None:
@@ -626,6 +668,10 @@ class BlockOps:
         time.sleep(AUTO_UPGRADE_CLICK_SETTLE)
         if self._checkpoint(stop_event):
             return True
+
+        hotkey = block.get("hotkey")
+        if block.get("useKey") and hotkey:
+            return self._run_auto_upgrade_use_key(stop_event, block, label, left, top, hotkey)
 
         try:
             priority_match, priority_name = vision.find_image_any(hwnd, PRIORITY_UPGRADE_IMAGE_NAMES)
@@ -671,6 +717,41 @@ class BlockOps:
             self._mouse.click(cx, cy)
             # Between clicks, not after the last one -- the control has to
             # register each step separately or several land as one.
+            if n < clicks - 1:
+                time.sleep(AUTO_UPGRADE_STEP_DELAY)
+            if self._checkpoint(stop_event):
+                return True
+        time.sleep(AUTO_UPGRADE_CLICK_SETTLE)
+
+        self._mouse.click(left + self._coords["unit_info_reset_x"], top + self._coords["unit_info_reset_y"])
+        return True
+
+    def _run_auto_upgrade_use_key(self, stop_event: threading.Event, block: dict, label: str,
+                                    left: int, top: int, hotkey) -> bool:
+        """Auto Upgrade Unit's "Use Key" mode: the unit is already clicked --
+        press the configured hotkey `priority` times (1 press = priority 1,
+        ... up to AUTO_UPGRADE_MAX_PRIORITY) instead of clicking the
+        priority_upgrade icon. "None" presses it zero times -- there's no
+        keybind equivalent of "cycle back to off" to press instead."""
+        vk = keys.key_name_to_vk(hotkey)
+        if vk is None:
+            self._log(f'{label}: hotkey "{hotkey}" isn\'t recognized -- skipping.')
+            return True
+
+        priority = str(block.get("params", {}).get("priority") or "None")
+        if priority == "None":
+            self._log(f'{label}: Use Key -- priority is None, nothing to press.')
+            return True
+        try:
+            clicks = max(1, min(AUTO_UPGRADE_MAX_PRIORITY, int(priority)))
+        except ValueError:
+            clicks = 1
+
+        self._log(f'{label}: Use Key -- pressing "{hotkey}" {clicks}x for priority {clicks}.')
+        for n in range(clicks):
+            self._keyboard.tap(vk)
+            # Between presses, not after the last one -- same reasoning as
+            # the click-cycling version this mode replaces.
             if n < clicks - 1:
                 time.sleep(AUTO_UPGRADE_STEP_DELAY)
             if self._checkpoint(stop_event):
@@ -753,6 +834,10 @@ class BlockOps:
         self._set_status(action=f'Running "{macro_name}" Pre Start blocks...')
         self._last_unit_ordinal = 0
         self._quick_place_shift_down = False
+        # Fresh set of Set Boolean variables for this match -- Pre Start
+        # always runs first, so anything set here is in place before Battle
+        # or a Loop phase can read it via an If block (see _evaluate_if).
+        self._macro_booleans = {}
         try:
             # An index loop (not enumerate) so detect/_jump control blocks can
             # jump over the branch not taken. `step` numbers only real,
@@ -771,6 +856,11 @@ class BlockOps:
                 if btype == "detect":
                     found, matches = detect.evaluate(self, hwnd, block)
                     self._log_detect_outcome(block, found, matches, step, "Pre Start")
+                    idx += 1 if found else block.get("_else_offset", 1)
+                    continue
+                if btype == "if":
+                    found = self._evaluate_if(block)
+                    self._log_if_outcome(block, found, step, "Pre Start")
                     idx += 1 if found else block.get("_else_offset", 1)
                     continue
                 if block.get("once") and not first_repeat:
@@ -832,6 +922,10 @@ class BlockOps:
             self._run_send_key_tick(block, i, phase_label="Pre Start")
         elif btype == "target_priority":
             self._run_target_priority_tick(hwnd, stop_event, block, i, phase_label="Pre Start")
+        elif btype == "click_unit":
+            self._run_click_unit_tick(hwnd, stop_event, block, i, phase_label="Pre Start")
+        elif btype == "set_boolean":
+            self._run_set_boolean_tick(block, i, phase_label="Pre Start")
         else:
             self._log(f'[Macro] Skipping block #{i} ("{btype}") -- not runnable in Pre Start yet.')
 
@@ -862,6 +956,40 @@ class BlockOps:
             joiner = " OR " if block.get("logic") == "or" else " AND "
             return "images " + (joiner.join(f'"{n}"' for n in names) if names else "(none set)")
         return f'image "{block.get("image") or "(none set)"}"'
+
+    def _evaluate_if(self, block: dict) -> bool:
+        """If block's condition: the current value of a named Set Boolean
+        variable (self._macro_booleans, reset fresh each match -- see
+        _run_prestart_blocks). No name picked, or a name that was never set
+        by a Set Boolean block yet, both read as False rather than erroring
+        -- same fail-safe spirit as Detect's missing-image handling."""
+        name = block.get("boolName") or ""
+        if not name:
+            return False
+        return bool(self._macro_booleans.get(name, False))
+
+    def _log_if_outcome(self, block: dict, found: bool, num: int, phase_label: str) -> None:
+        """Report an If block's result to the Process Log: which variable,
+        its current value, and which branch that sends this run down."""
+        label = f"{phase_label} block #{num} (If)"
+        name = block.get("boolName") or "(none set)"
+        branch = "Then" if found else "Else"
+        self._log(f'{label}: "{name}" is {found} -- running {branch} branch.')
+
+    def _run_set_boolean_tick(self, block: dict, block_num: int, phase_label: str = "Battle") -> None:
+        """One-shot: sets a named boolean variable to True/False -- creates
+        it if this is the first Set Boolean block to use that name, just
+        overwrites the value if it already exists. Read later by If blocks
+        via _evaluate_if; self._macro_booleans starts fresh each match (see
+        _run_prestart_blocks)."""
+        name = str(block.get("params", {}).get("name") or "").strip()
+        label = f'{phase_label} block #{block_num} (Set Boolean)'
+        if not name:
+            self._log(f'{label}: no variable name set -- skipping.')
+            return
+        value = str(block.get("params", {}).get("value") or "False") == "True"
+        self._macro_booleans[name] = value
+        self._log(f'{label}: "{name}" = {value}.')
 
     def _run_walk_path_block(self, hwnd, stop_event: threading.Event, task: dict, default_walk_paths: dict,
                                block: dict, first_repeat: bool) -> None:
@@ -1137,6 +1265,15 @@ class BlockOps:
             self._mouse.move_to(left + orig_x, top + orig_y)
             time.sleep(PLACE_PIXEL_SEARCH_SETTLE)
             spot = (orig_x, orig_y)
+            # Recorded right now, unconditionally -- not only after a later
+            # unit_exist verify succeeds. Ignore Highlight means this
+            # coordinate IS the unit's position by definition, so a later
+            # verify miss (no unit_exist.png added, a stale tile, whatever)
+            # would otherwise leave every block that targets this unit by
+            # #index (Click/Sell/Upgrade/Target Priority/Auto Upgrade) with
+            # no position at all, even though the click still landed here.
+            if unit_ordinal is not None:
+                self._placed_unit_positions[unit_ordinal] = (orig_x, orig_y)
         else:
             spot = self._find_valid_place_spot(hwnd, stop_event, left, top, orig_x, orig_y, name)
         if self._checkpoint(stop_event):
@@ -1257,6 +1394,10 @@ class BlockOps:
                 self._mouse.move_to(left + orig_x, top + orig_y)
                 time.sleep(PLACE_PIXEL_SEARCH_SETTLE)
                 spot = (orig_x, orig_y)
+                # Same reasoning as the non-"Keep Placing" path above --
+                # record now, don't wait on a verify that may never confirm.
+                if unit_ordinal is not None:
+                    self._placed_unit_positions[unit_ordinal] = (orig_x, orig_y)
             else:
                 spot = self._find_valid_place_spot(hwnd, stop_event, left, top, orig_x, orig_y, name)
             if self._checkpoint(stop_event):
