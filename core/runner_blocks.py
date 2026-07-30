@@ -662,6 +662,16 @@ class BlockOps:
         if pos is None:
             return True
 
+        params = block.get("params", {})
+        priority = str(params.get("priority") or "None")
+        if priority == "None":
+            steps = AUTO_UPGRADE_MAX_PRIORITY + 1
+        else:
+            try:
+                steps = max(1, min(AUTO_UPGRADE_MAX_PRIORITY, int(priority)))
+            except ValueError:
+                steps = 1
+
         left, top, _, _ = wm.get_window_rect_screen(hwnd)
         self._set_status(action="Setting auto-upgrade priority...")
         self._mouse.click(left + pos[0], top + pos[1])
@@ -697,19 +707,15 @@ class BlockOps:
         # What it actually is: each left click advances the priority by one,
         # so priority N is N clicks on the icon itself, and one click past
         # the last priority wraps it back to off.
-        priority = str(block.get("params", {}).get("priority") or "None")
         cx = left + priority_match["cx"]
         cy = top + priority_match["cy"]
 
         if priority == "None":
-            clicks = AUTO_UPGRADE_MAX_PRIORITY + 1
+            clicks = steps
             self._log(f'{label}: found "{priority_name}" (score {priority_match["score"]:.2f}) -- '
                        f'clicking it {clicks}x to cycle back to off.{suffix}')
         else:
-            try:
-                clicks = max(1, min(AUTO_UPGRADE_MAX_PRIORITY, int(priority)))
-            except ValueError:
-                clicks = 1
+            clicks = steps
             self._log(f'{label}: found "{priority_name}" (score {priority_match["score"]:.2f}) -- '
                        f'clicking it {clicks}x for priority {clicks}.{suffix}')
 

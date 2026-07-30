@@ -566,8 +566,11 @@ function toggleCompactStrip() {
 }
 
 // ---------------------------------------------------------------------------
-// Status polling
+// Status Polling & UI Synchronization
 // ---------------------------------------------------------------------------
+// Fetches live status dict from the backend every 1.5 seconds and updates all
+// Status Readout DOM elements. When the macro enters Idle/Stopped state, the
+// backend returns reset '-' placeholders for task/map/repeat fields.
 async function refreshStatus() {
   if (!window.pywebview) return;
   try {
@@ -577,6 +580,7 @@ async function refreshStatus() {
     } else {
       showWaiting();
     }
+    // Synchronize live readout fields (Action, Task, Repeat, Map, Mode, etc.)
     document.getElementById('stat-current-task').textContent = status.current_task ?? '-';
     document.getElementById('stat-current-repeat').textContent = status.current_repeat ?? '-';
     document.getElementById('stat-map').textContent = status.map ?? '-';
@@ -823,7 +827,7 @@ let rebindingAction = null;
 // Esc during capture instead.
 const HOTKEY_DEFAULTS = {
   toggle_game: 'f4', skip_waiting: '', macro_start: 'f1', macro_stop: 'f2', macro_pause: 'f5', debug_screenshot: 'f3',
-  image_manager: 'f6', toggle_compact: 'f7',
+  image_manager: 'f6', toggle_compact: 'f7', game_auto_upgrade: '',
 };
 
 // Reflects one hotkey's state into its button text and shows/hides its
@@ -907,6 +911,7 @@ async function resetHotkeys() {
     updateKeybindDisplay('debug_screenshot', hk.debug_screenshot || '');
     updateKeybindDisplay('image_manager', hk.image_manager || '');
     updateKeybindDisplay('toggle_compact', hk.toggle_compact || '');
+    updateKeybindDisplay('game_auto_upgrade', hk.game_auto_upgrade || '');
   } catch (e) {}
 }
 
@@ -1129,6 +1134,7 @@ async function loadSettingsUI() {
     updateKeybindDisplay('debug_screenshot', hk.debug_screenshot || '');
     updateKeybindDisplay('image_manager', hk.image_manager || '');
     updateKeybindDisplay('toggle_compact', hk.toggle_compact || '');
+    updateKeybindDisplay('game_auto_upgrade', hk.game_auto_upgrade || '');
     // (There was an updateDashboardHotkeys(hk) call here. No such function has
     // ever existed in this file, so every load of Settings threw a
     // ReferenceError that this bare catch swallowed. Nothing broke visibly
@@ -3060,7 +3066,8 @@ async function refreshBountyScreen() {
 
 function renderBountyScreen() {
   const s = bountyState;
-  document.getElementById('toggle-bounty-enabled')?.classList.toggle('on', !!(s && s.enabled));
+  document.getElementById('toggle-bounty-enabled')?.classList.toggle(
+    'on', !!(s && s.enabled && s.setup_ready));
   const playMode = (s && s.play_mode) || 'solo';
   document.getElementById('bounty-mode-solo')?.classList.toggle('active', playMode === 'solo');
   document.getElementById('bounty-mode-matchmaking')?.classList.toggle('active', playMode === 'matchmaking');
@@ -3073,6 +3080,21 @@ function renderBountyScreen() {
   if (!s) {
     list.innerHTML = '<div class="rh-empty">Couldn\'t load Auto Bounty settings.</div>';
     return;
+  }
+  const warning = document.getElementById('bounty-setup-warning');
+  if (warning) {
+    const missing = s.missing_maps || [];
+    const invalid = s.invalid_maps || [];
+    const problems = [];
+    if (missing.length) problems.push(`Assign: ${missing.map(escapeHtml).join(', ')}`);
+    if (invalid.length) {
+      problems.push(`Repair: ${invalid.map(item =>
+        `${escapeHtml(item.map)} (${escapeHtml(item.macro)})`).join(', ')}`);
+    }
+    warning.innerHTML = s.setup_ready
+      ? ''
+      : `<strong>Setup required:</strong> Auto Bounty needs a saved Macro Operation for every Story map. ${problems.join('. ')}.`;
+    warning.style.display = s.setup_ready ? 'none' : '';
   }
   const macroOpts = current => `<option value="">No Macro</option>` +
     taskTemplates.map(name =>
@@ -3096,9 +3118,14 @@ function renderBountyScreen() {
 
 async function toggleBountyEnabled(btn) {
   const isOn = !btn.classList.contains('on');
-  btn.classList.toggle('on', isOn);
   bounceToggle(btn);
-  try { await pywebview.api.set_bounty_enabled(isOn); } catch (e) {}
+  try {
+    const result = await pywebview.api.set_bounty_enabled(isOn);
+    if (!result.ok && result.reason === 'incomplete_bounty_maps') {
+      addLog('[Macro] Auto Bounty needs a saved Macro Operation for every Story map before it can be enabled.');
+    }
+  } catch (e) {}
+  await refreshBountyScreen();
 }
 
 async function setBountyPlayMode(playMode) {
@@ -3112,7 +3139,13 @@ async function setBountySummonBanner(banner) {
 }
 
 async function setBountyMapMacro(map, macro) {
-  try { await pywebview.api.set_bounty_map_macro(map, macro); } catch (e) {}
+  try {
+    const result = await pywebview.api.set_bounty_map_macro(map, macro);
+    if (result.auto_disabled) {
+      addLog(`[Macro] Auto Bounty disabled: ${map} no longer has a usable Macro Operation.`);
+    }
+  } catch (e) {}
+  await refreshBountyScreen();
 }
 
 // ---------------------------------------------------------------------------
@@ -4247,6 +4280,7 @@ const AUTO_UPGRADE_PRIORITIES = ['None', '1', '2', '3', '4', '5', '6'];
 
 function renderAutoUpgradeControls(b) {
   const current = String(b.params.priority ?? 1);
+  const input = String(b.params.input || 'click').toLowerCase();
   const options = AUTO_UPGRADE_PRIORITIES.map(p =>
     `<option value="${p}" ${p === current ? 'selected' : ''}>${p}</option>`).join('');
   const useKey = `<button type="button" class="block-mod-btn ${b.useKey ? 'on' : ''} tooltip-side" data-tooltip="Press hotkey instead, clicks if hotkey not set." onclick="toggleAutoUpgradeUseKey('${b.id}')">Use Key</button>`;
@@ -5134,7 +5168,7 @@ const IMAGE_DESCRIPTIONS = {
   "select upgrade card": "The level-up 'Select an upgrade!' reward-card popup.",
   story: "The Story card on the Play menu.",
   team: "The Team Loadout panel (opened with H).",
-  teleportstuck: "The stuck / spinning loading screen -- flags a hung teleport.",
+  teleportstuck: "Legacy normal-loading reference; no longer used as a disconnect signal.",
   toggle_false: "A Settings toggle in its OFF state.",
   toggle_true: "A Settings toggle in its ON state.",
   unit_exist: "Confirms a unit was actually placed on the field.",

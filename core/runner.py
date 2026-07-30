@@ -16,6 +16,7 @@ exist.
 import os
 import threading
 import time
+import traceback
 from datetime import datetime, timezone
 
 import cv2
@@ -81,7 +82,8 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, ExpeditionOps, BlockOps)
 
     def __init__(self, mouse, keyboard, log, set_status=None, record_result=None,
                  get_challenge_settings=None, mark_challenge_stage_played=None, get_run_stats=None,
-                 get_crafting_settings=None, set_crafting_count=None, get_bounty_settings=None):
+                 get_crafting_settings=None, set_crafting_count=None, get_bounty_settings=None,
+                 get_hotkeys=None):
         self._mouse = mouse
         self._keyboard = keyboard
         self._log = log
@@ -133,6 +135,10 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, ExpeditionOps, BlockOps)
         # in tests/CLI mode) just makes _run_challenges a no-op.
         self._get_challenge_settings = get_challenge_settings
         self._get_bounty_settings = get_bounty_settings
+        # Read when an Auto Upgrade Unit block runs so a key changed in
+        # Settings is used without rebuilding the runner or embedding a
+        # machine-specific key inside every exported macro template.
+        self._get_hotkeys = get_hotkeys or (lambda: {})
         self._mark_challenge_stage_played = mark_challenge_stage_played or (lambda *a, **kw: None)
         # Returns a fresh session/all-time win-loss + session_start + version
         # snapshot for the match-result webhook (see _send_result_webhook).
@@ -570,9 +576,48 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, ExpeditionOps, BlockOps)
             # backing (SetThreadExecutionState) is per-thread.
             wm.prevent_sleep()
             self._run(*args)
+        except Exception as exc:
+            # A daemon-thread exception is otherwise invisible in the
+            # pythonw release build: Start simply becomes available again
+            # and debug.log ends at the last normal action. Keep this final
+            # boundary even though the independently recoverable phases in
+            # _run are guarded below.
+            self._log_unexpected_phase_error("runner session", exc)
+            self._set_status(action="Idle")
         finally:
             wm.allow_sleep()
             vision.close_mss()
+
+    def _log_unexpected_phase_error(self, phase: str, exc: Exception) -> None:
+        self._log(
+            f"[Macro] Unexpected error during {phase}: "
+            f"{type(exc).__name__}: {exc}")
+        self._log(f"[Debug] {traceback.format_exc().strip()}")
+
+    def _run_guarded_phase(self, phase: str, hwnd, stop_event: threading.Event,
+                           operation):
+        """Run one independently recoverable part of an unattended pass.
+
+        Returns ``(completed, result)``. An implementation bug or transient
+        capture exception in Auto Bounty/Challenge/a single queued task must
+        not kill the daemon thread and silently end the entire overnight run.
+        """
+        try:
+            return True, operation()
+        except Exception as exc:
+            self._log_unexpected_phase_error(phase, exc)
+            if not stop_event.is_set():
+                self._set_status(action=f"Recovering after {phase} error...")
+                try:
+                    self._recover_to_lobby(hwnd, stop_event)
+                except Exception as recovery_exc:
+                    self._log_unexpected_phase_error(
+                        f"{phase} lobby recovery", recovery_exc)
+            return False, None
+
+    def _run_crafting_if_due(self, hwnd, stop_event: threading.Event) -> None:
+        if self._crafting_wants_in():
+            self._run_crafting(hwnd, stop_event)
 
     def _run(self, hwnd_getter, get_tasks, stop_event: threading.Event, scroll_power: int = None,
               coords: dict = None, scroll_nudges: int = None, default_walk_paths: dict = None,
@@ -645,16 +690,24 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, ExpeditionOps, BlockOps)
         if self._checkpoint(stop_event):
             return
         if not self._skip_first_task_setup:
-            bounty_enabled = self._run_bounties(
-                hwnd, stop_event, coords, default_walk_paths, webhook)
+            bounty_ok, bounty_result = self._run_guarded_phase(
+                "Auto Bounty", hwnd, stop_event,
+                lambda: self._run_bounties(
+                    hwnd, stop_event, coords, default_walk_paths, webhook))
+            bounty_enabled = bool(bounty_result) if bounty_ok else bool(
+                self._bounty_settings().get("enabled"))
         else:
             bounty_enabled = False
         if self._checkpoint(stop_event):
             return
         if not self._skip_first_task_setup:
-            self._run_challenges(hwnd, stop_event, coords, default_walk_paths, webhook)
-            if self._crafting_wants_in():
-                self._run_crafting(hwnd, stop_event)
+            self._run_guarded_phase(
+                "Challenge", hwnd, stop_event,
+                lambda: self._run_challenges(
+                    hwnd, stop_event, coords, default_walk_paths, webhook))
+            self._run_guarded_phase(
+                "Auto Crafting", hwnd, stop_event,
+                lambda: self._run_crafting_if_due(hwnd, stop_event))
         if self._checkpoint(stop_event):
             return
 
@@ -701,8 +754,19 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, ExpeditionOps, BlockOps)
                 # doesn't kill the whole overnight run -- _run_task recovers to
                 # the lobby and retries internally, only returning False when
                 # stop_event actually fired.
-                if not self._run_task(hwnd, stop_event, task, task_index, len(tasks), coords, scroll_power,
-                                        scroll_nudges, default_walk_paths, webhook):
+                task_ok, task_result = self._run_guarded_phase(
+                    f"task {task_index}/{len(tasks)}", hwnd, stop_event,
+                    lambda: self._run_task(
+                        hwnd, stop_event, task, task_index, len(tasks), coords,
+                        scroll_power, scroll_nudges, default_walk_paths, webhook))
+                if not task_ok:
+                    if self._checkpoint(stop_event):
+                        return
+                    # Recovery already returned to the lobby. Skip only this
+                    # broken task and let the remaining queue (or its next
+                    # pass) continue instead of ending the runner thread.
+                    continue
+                if not task_result:
                     self._set_status(action="Idle")
                     return
 
@@ -713,12 +777,13 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, ExpeditionOps, BlockOps)
                 # in-task hook is gated by `not is_last_repeat`). Without this,
                 # a reached threshold just sat until the next Start -- the exact
                 # "task finished, came back to lobby, no craft" report.
-                if self._crafting_wants_in():
-                    self._run_crafting(hwnd, stop_event)
-                    if self._current_hwnd and wm.is_window(self._current_hwnd):
-                        hwnd = self._current_hwnd
-                    if self._checkpoint(stop_event):
-                        return
+                self._run_guarded_phase(
+                    "Auto Crafting", hwnd, stop_event,
+                    lambda: self._run_crafting_if_due(hwnd, stop_event))
+                if self._current_hwnd and wm.is_window(self._current_hwnd):
+                    hwnd = self._current_hwnd
+                if self._checkpoint(stop_event):
+                    return
 
             # The queue always loops back to task 1 once it finishes rather
             # than going Idle -- Stop (F2) is the only way to actually end
@@ -857,13 +922,14 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, ExpeditionOps, BlockOps)
                 # navigation (which starts from the lobby) runs.
                 challenge_wants_in = (not is_last_repeat) and self._challenge_has_ready_stage()
                 # Same interleave shape for Auto Crafting: if the win counter
-                # has hit its threshold, force a real Leave Stage this repeat so
-                # the crafting navigation (which starts from the lobby) can run.
-                # Checked BEFORE _handle_match_result, which is where THIS win
-                # gets counted -- so a pass fires on the repeat after the count
-                # reaches N, not the same one (a one-repeat lag, negligible on a
-                # farm and worth keeping the clean Leave-Stage-first ordering).
-                crafting_wants_in = (not is_last_repeat) and self._crafting_wants_in()
+                # reaches its threshold INCLUDING this result, force a real
+                # Leave Stage now so crafting navigation can start from the
+                # lobby. _handle_match_result persists this win immediately
+                # afterward; the projection here only decides Repeat vs Leave.
+                crafting_wants_in = (
+                    (not is_last_repeat)
+                    and self._crafting_wants_in(task, result)
+                )
                 # The bounded-Infinite path and the Leave-at-Minute block
                 # (left_live_match) already left the live match, so there is no
                 # Victory/Defeat screen to process here.
@@ -940,6 +1006,18 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, ExpeditionOps, BlockOps)
                     self._run_challenges(hwnd, stop_event, coords, default_walk_paths, webhook)
                     if self._checkpoint(stop_event):
                         return False
+                    # Challenge has priority when both diversions become due
+                    # on the same result. It can also add qualifying wins of
+                    # its own, so honor a now-due crafting pass while already
+                    # in the lobby instead of re-entering the farm for an
+                    # unnecessary extra match first.
+                    if self._crafting_wants_in():
+                        self._log(
+                            "[Macro] Crafting became due during Challenge -- "
+                            "running it before resuming the farm.")
+                        self._run_crafting(hwnd, stop_event)
+                        if self._checkpoint(stop_event):
+                            return False
                     self._log(f'[Macro] Challenge pass finished -- resuming "{map_name}".')
                     # Left the stage entirely for Challenge (repeat=False
                     # above already did Leave Stage + Return to Lobby), so
@@ -1454,7 +1532,7 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, ExpeditionOps, BlockOps)
                 except vision.TemplateNotFound:
                     continue
                 if reconnect_match is not None:
-                    self._handle_disconnect(hwnd, stop_event, webhook, task, "disconnected")
+                    self._handle_disconnect(hwnd, stop_event, webhook, task)
                     return None
 
             if watch_close_popup:
@@ -2211,12 +2289,12 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, ExpeditionOps, BlockOps)
         self._log(f'[Macro] Waiting to teleport in-game (watching for "nav_unitmanager", up to '
                    f'{timeout:.0f}s)...')
         self._set_status(action='Waiting to teleport in-game ("nav_unitmanager")...')
-        result = self._wait_for_teleport_or_stuck(hwnd, stop_event, timeout)
+        result = self._wait_for_teleport_result(hwnd, stop_event, timeout)
         if result == "ok":
             self._log("[Macro] Teleported in-game.")
             return True
-        if result in ("stuck", "disconnected"):
-            self._handle_disconnect(hwnd, stop_event, webhook, task, result)
+        if result == "disconnected":
+            self._handle_disconnect(hwnd, stop_event, webhook, task)
             return False
         if result == "timeout" and not stop_event.is_set():
             self._log(f'[Macro] "nav_unitmanager" not found within {timeout:.0f}s -- never teleported '
@@ -2225,23 +2303,14 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, ExpeditionOps, BlockOps)
                        f'Image Manager). Stopping.')
         return False
 
-    def _wait_for_teleport_or_stuck(self, hwnd, stop_event: threading.Event, timeout: float) -> str:
-        """Polls for nav_unitmanager (teleport-in confirmed), Roblox's own
-        Reconnect/Retry prompt (a definite disconnect, no continuous-
-        visibility wait needed), and teleportstuck (a hung loading screen,
-        which CAN be a momentary false alarm so it only counts once it's
-        been continuously visible for TELEPORT_STUCK_TIMEOUT) side by side --
-        a stuck/disconnected teleport never resolves into either success or
-        a clean "gone" the way other timeouts do, it just sits there
-        forever, so this is the only way to tell "still loading, be
-        patient" apart from "actually broken, needs a rejoin". Returns
-        "ok", "disconnected", "stuck", "stopped", or "timeout". Both
-        reconnect/retry and teleportstuck are optional -- a missing crop
-        just disables that half of the check, same as any other best-effort
-        image search in this file."""
+    def _wait_for_teleport_result(self, hwnd, stop_event: threading.Event, timeout: float) -> str:
+        """Poll for teleport success or Roblox's definite disconnect prompt.
+
+        ``teleportstuck`` is only Roblox's ordinary black loading screen, not
+        a distinct error state. Normal loading gets the caller's full timeout;
+        only the Reconnect/Retry prompt is an immediate failure. Returns
+        "ok", "disconnected", "stopped", or "timeout"."""
         deadline = time.time() + timeout
-        stuck_since = None
-        stuck_template_missing = False
         while time.time() < deadline:
             if stop_event.is_set():
                 return "stopped"
@@ -2261,35 +2330,13 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, ExpeditionOps, BlockOps)
                 if reconnect_match is not None:
                     return "disconnected"
 
-            if not stuck_template_missing:
-                try:
-                    stuck_match = vision.find_image(hwnd, "teleportstuck")
-                except vision.TemplateNotFound:
-                    stuck_match = None
-                    stuck_template_missing = True  # don't keep re-searching for a crop that was never added
-                if stuck_match is not None:
-                    if stuck_since is None:
-                        stuck_since = time.time()
-                    elif time.time() - stuck_since >= TELEPORT_STUCK_TIMEOUT:
-                        return "stuck"
-                else:
-                    stuck_since = None  # only counts while CONTINUOUSLY visible
-
             time.sleep(TELEPORT_POLL_INTERVAL)
         return "timeout"
 
-    def _handle_disconnect(self, hwnd, stop_event: threading.Event, webhook: dict, task: dict,
-                             reason: str) -> None:
-        """A stuck/disconnected teleport is unrecoverable by waiting longer
-        or retrying a click -- only an actual rejoin fixes it. Logs the
-        disconnect to Discord (if configured) and attempts one, updating
-        self._current_hwnd on success so the next task-setup retry (see
-        _run_task's recovery loop, which re-reads self._current_hwnd) picks
-        up wherever the game ended up re-docked. Always returns None --
-        callers treat this attempt as failed either way and let the normal
-        task-recovery loop decide whether to retry."""
-        why = "Roblox's own Reconnect/Retry prompt appeared" if reason == "disconnected" \
-            else f"the teleport was stuck for over {TELEPORT_STUCK_TIMEOUT:.0f}s"
+    def _handle_disconnect(self, hwnd, stop_event: threading.Event, webhook: dict,
+                             task: dict) -> None:
+        """Rejoin after Roblox displays its definite Reconnect/Retry prompt."""
+        why = "Roblox's own Reconnect/Retry prompt appeared"
         self._log(f"[Macro] Disconnected from Roblox ({why}) -- attempting to rejoin.")
         screenshot_path = self._save_debug_screenshot_unconditional(hwnd, "teleport_disconnected")
         self._send_event_webhook(webhook, task, "Disconnected -- Rejoining",
@@ -2462,16 +2509,15 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, ExpeditionOps, BlockOps)
             self._log(f'[Macro] Waiting to teleport in-game (watching for "nav_unitmanager", up to '
                        f'{SOLO_TELEPORT_PER_ATTEMPT_TIMEOUT:.0f}s)...')
             self._set_status(action='Waiting to teleport in-game ("nav_unitmanager")...')
-            result = self._wait_for_teleport_or_stuck(hwnd, stop_event, SOLO_TELEPORT_PER_ATTEMPT_TIMEOUT)
+            result = self._wait_for_teleport_result(
+                hwnd, stop_event, SOLO_TELEPORT_PER_ATTEMPT_TIMEOUT)
             if result == "ok":
                 self._log("[Macro] Teleported in-game.")
                 return True
-            if result in ("stuck", "disconnected"):
-                # Broken, not slow -- re-clicking Start or waiting through
-                # more attempts won't fix a hung/disconnected server, so this
-                # bails immediately instead of burning the rest of the retry
-                # budget on something a rejoin (not a click) actually fixes.
-                self._handle_disconnect(hwnd, stop_event, webhook, task, result)
+            if result == "disconnected":
+                # Broken, not slow -- Roblox displayed its definite
+                # Reconnect/Retry prompt, so rejoin instead of retrying Start.
+                self._handle_disconnect(hwnd, stop_event, webhook, task)
                 return False
             if stop_event.is_set():
                 return False
@@ -3107,6 +3153,13 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, ExpeditionOps, BlockOps)
             self._log("[Macro] Couldn't confirm focus before clicking Play -- click may not register.")
         time.sleep(0.1)
         vision.click_match(self._mouse, hwnd, match)
+        # The gamemode screen replaces the lobby immediately after this
+        # click. Leaving the pointer on Play can put it over a party/invite
+        # control in the new layout and open an unrelated overlay. Move to
+        # the existing user-calibratable empty corner before the transition.
+        left, top, _, _ = wm.get_window_rect_screen(hwnd)
+        park_x, park_y = self._cxy("unit_info_reset")
+        self._mouse.move_to(left + park_x, top + park_y)
         return True
 
     def _reach_map_selected(self, hwnd, stop_event: threading.Event, map_name: str, mode: str,

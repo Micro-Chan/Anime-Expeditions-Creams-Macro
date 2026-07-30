@@ -85,7 +85,7 @@
         </svg>
       </button>
       <button id="nav-faq" onclick="openFaqModal()" class="nav-btn no-drag" data-tooltip="Help & FAQ">
-        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="10"/>
           <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
           <line x1="12" y1="17" x2="12.01" y2="17"/>
@@ -706,6 +706,7 @@
 
           <div>
             <div class="wh-hint" style="margin-bottom: 6px;">Assign the Macro Operation Auto Bounty should use for each Story destination.</div>
+            <div id="bounty-setup-warning" class="bounty-setup-warning" style="display: none;"></div>
             <div id="bounty-map-list" class="flex flex-col gap-1.5"></div>
           </div>
 
@@ -919,6 +920,16 @@
               <div class="keybind-group">
                 <button id="keybind-clear-toggle_compact" class="keybind-clear-btn" onclick="clearHotkey('toggle_compact')" title="Reset to default key (press Esc while capturing to unbind)">&times;</button>
                 <button id="keybind-toggle_compact" class="keybind-btn" onclick="startRebind('toggle_compact', this)">F7</button>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div>
+                <div class="setting-label">Auto Upgrade (In Game)</div>
+                <div class="setting-desc">Match the Auto Upgrade key configured in the game's settings. Used by Auto Upgrade Unit blocks set to Hotkey.</div>
+              </div>
+              <div class="keybind-group">
+                <button id="keybind-clear-game_auto_upgrade" class="keybind-clear-btn" onclick="clearHotkey('game_auto_upgrade')" title="Reset to default key (press Esc while capturing to unbind)">&times;</button>
+                <button id="keybind-game_auto_upgrade" class="keybind-btn" onclick="startRebind('game_auto_upgrade', this)">Unbound</button>
               </div>
             </div>
           </div>
@@ -2137,7 +2148,7 @@
     <div class="modal-panel" style="width: 620px; max-width: 94vw;">
       <div class="modal-head">
         <div class="flex items-center gap-2">
-          <svg class="w-4 h-4" style="color: var(--brand);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg class="w-4 h-4" style="color: var(--brand);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="10"/>
             <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
             <line x1="12" y1="17" x2="12.01" y2="17"/>
