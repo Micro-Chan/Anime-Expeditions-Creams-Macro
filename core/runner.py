@@ -833,10 +833,29 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ExpeditionOps, 
         map_name = task.get("map")
         mode = task.get("mode") or "story"
         repeat_total = max(1, int(task.get("repeat") or 1))
+        # Repeats already resolved (win/loss handled by _handle_match_result)
+        # across EVERY recovery attempt so far -- carried across the outer
+        # loop below so a mid-task recovery resumes the count instead of
+        # restarting it at 1. Without this, a single transient detection
+        # miss anywhere in the repeat loop (e.g. "Repeat Stage" not found in
+        # time) -- unrelated to whether the match was won or lost -- could
+        # multiply a task's configured repeat count by up to
+        # TASK_RECOVERY_ATTEMPTS, confirmed live: 37 configured, 47+ actual
+        # repeats played (all wins), because each recovery restarted the
+        # count from 1 instead of resuming it.
+        repeats_done = 0
 
         for recovery_attempt in range(1, TASK_RECOVERY_ATTEMPTS + 1):
             if self._checkpoint(stop_event):
                 return False
+            if repeats_done >= repeat_total:
+                # Every repeat already completed -- whatever broke this
+                # attempt happened AFTER the last one's result was already
+                # handled (e.g. a consecutive-loss restart's rejoin failing
+                # right after the final repeat's win/loss was recorded), so
+                # there's nothing left to play. Re-running setup here would
+                # just re-enter the stage with no repeat left to spend on it.
+                return True
             # A disconnect handled during the previous attempt (see
             # _attempt_rejoin) may have re-docked Roblox under a NEW hwnd --
             # self._current_hwnd is what tracks that, so every retry picks
@@ -846,7 +865,8 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ExpeditionOps, 
                 hwnd = self._current_hwnd
             if recovery_attempt > 1:
                 self._log(f'[Macro] Retrying task {task_index}/{task_count} from the lobby '
-                           f'(attempt {recovery_attempt}/{TASK_RECOVERY_ATTEMPTS})...')
+                           f'(attempt {recovery_attempt}/{TASK_RECOVERY_ATTEMPTS}) -- '
+                           f'resuming from repeat {repeats_done + 1}/{repeat_total}...')
             self._log(f'[Macro] Task {task_index}/{task_count}: "{map_name}" x{repeat_total}.')
             # Everything beyond current_task/current_repeat/map/action is
             # new -- for the Dashboard's Status Readout hover-expand (shows
@@ -856,7 +876,8 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ExpeditionOps, 
             # Raid/Infinite/Mastery lock difficulty, Challenge has neither
             # in the Task Queue sense) -- placeholder "-" rather than
             # leaving a PREVIOUS task's value stale on screen.
-            self._set_status(current_task=f"{task_index} / {task_count}", current_repeat=f"1 / {repeat_total}",
+            self._set_status(current_task=f"{task_index} / {task_count}",
+                              current_repeat=f"{repeats_done + 1} / {repeat_total}",
                               map=map_name, action="Starting...", mode=mode, stage=str(task.get("stage") or "-"),
                               difficulty=task.get("difficulty") or "-", play_mode=task.get("play_mode") or "solo",
                               macro=task.get("macro") or "-")
@@ -895,7 +916,7 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ExpeditionOps, 
             # just fully re-run, confirmed from a real report: Walk Path
             # silently skipped resuming a task after a Challenge interleave).
             fresh_entry = True
-            for repeat_index in range(1, repeat_total + 1):
+            for repeat_index in range(repeats_done + 1, repeat_total + 1):
                 self._set_status(current_repeat=f"{repeat_index} / {repeat_total}")
                 battle_started = time.time()
                 result = self._play_one_match(hwnd, stop_event, task, default_walk_paths,
@@ -968,6 +989,14 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ExpeditionOps, 
                         return False
                     task_failed = True
                     break
+                # This repeat's result is fully resolved (win/loss recorded,
+                # or already left the match some other way) -- whatever
+                # happens for the REST of this iteration (a consecutive-loss
+                # restart, a Challenge/Crafting/Fuel/Act4 interleave, a
+                # failed re-entry), this one counts. See repeats_done's
+                # declaration above for why this has to persist across
+                # recovery attempts instead of just being repeat_index.
+                repeats_done = repeat_index
                 if self._checkpoint(stop_event):
                     return False
 

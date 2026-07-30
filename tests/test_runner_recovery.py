@@ -316,3 +316,44 @@ def test_crafting_readiness_exception_does_not_block_task_queue(
         for call_args in runner._log.call_args_list
     )
 
+
+def test_mid_task_recovery_resumes_repeat_count_instead_of_restarting(
+        monkeypatch, runner):
+    """Regression: a transient mid-loop failure (e.g. "Repeat Stage" not
+    found in time -- _handle_match_result returning False), unrelated to
+    whether the match itself was won or lost, used to reset the repeat loop
+    back to 1 on every recovery attempt instead of resuming where it left
+    off -- so a task configured to repeat N times could actually play up to
+    N * TASK_RECOVERY_ATTEMPTS matches. Confirmed live: 37 configured, 47+
+    actual repeats played, all wins."""
+    monkeypatch.setattr(runner, "_checkpoint", lambda _stop: False)
+    monkeypatch.setattr(runner, "_run_task_setup", lambda *_a, **_k: True)
+    monkeypatch.setattr(runner, "_challenge_has_ready_stage", lambda: False)
+    monkeypatch.setattr(runner, "_crafting_wants_in", lambda *_a, **_k: False)
+    monkeypatch.setattr(runner, "_fuel_wants_in", lambda: False)
+    monkeypatch.setattr(runner, "_play_one_match", lambda *_a, **_k: "win")
+    monkeypatch.setattr(runner, "_wait_teleport_in", lambda *_a, **_k: True)
+    runner._recover_to_lobby.return_value = True
+
+    calls = {"n": 0}
+
+    def handle_result(*_args, **_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            # A one-off detection miss on the 3rd repeat -- nothing to do
+            # with win/loss, just a UI timeout resolving the match.
+            return False
+        return True
+
+    runner._handle_match_result = Mock(side_effect=handle_result)
+    task = {"mode": "story", "map": "King's Tomb", "stage": "1", "repeat": 5, "play_mode": "solo"}
+
+    completed = runner._run_task(123, runner._stop_event, task, 1, 1, {}, 3, 8, {}, {})
+
+    assert completed is True
+    # 5 configured repeats: 1, 2, 3(fails), then resume at 3, 4, 5 -- 6
+    # total _handle_match_result calls. The bug would restart the whole
+    # count from 1 after the recovery, landing on 8 instead (2 successes +
+    # 1 failure, then 5 more from scratch).
+    assert calls["n"] == 6
+
