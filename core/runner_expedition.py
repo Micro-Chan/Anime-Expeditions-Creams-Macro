@@ -17,15 +17,18 @@ from .runner_constants import _exp_green, _exp_green_loose, _exp_red  # undersco
 
 class ExpeditionOps:
     def _strip_auto_upgrade_for_expedition(self, blocks: list, task: dict) -> list:
-        # Auto Upgrade Unit reads the unit's upgrade-cost/affordability UI to
-        # decide when to click -- Expedition's version of that panel isn't
-        # what it was built against, so it just spins without ever actually
-        # upgrading. Rather than have it silently fail on every run, skip
-        # the block entirely for Expedition tasks (Pre Start's copy of this
-        # same block is skipped the same way -- see _run_prestart_blocks).
+        # Auto Upgrade Unit's click path reads the unit's upgrade-cost/
+        # affordability UI to decide when to click -- Expedition's version of
+        # that panel isn't what it was built against, so it just spins
+        # without ever actually upgrading. Rather than have it silently fail
+        # on every run, skip that path entirely for Expedition tasks (Pre
+        # Start's copy of this same block is skipped the same way -- see
+        # _run_prestart_blocks). Use Key mode presses a hotkey instead of
+        # reading that panel, so it isn't affected and is left alone.
         if task.get("mode") != "expedition":
             return blocks
-        filtered = [b for b in blocks if b.get("type") != "auto_upgrade_unit"]
+        filtered = [b for b in blocks
+                    if b.get("type") != "auto_upgrade_unit" or (b.get("useKey") and b.get("hotkey"))]
         if len(filtered) != len(blocks):
             self._log("[Macro] Skipping Auto Upgrade Unit block(s) -- not reliable on Expedition, ignoring them.")
         return filtered
