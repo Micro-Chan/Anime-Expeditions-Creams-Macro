@@ -37,6 +37,11 @@ __pycache__/
 .venv/
 venv/
 
+# Bundled portable Python distribution (embeddable dist + pip-installed
+# requirements.txt packages) -- ~100+MB of interpreter and third-party
+# binaries, never meant to be committed.
+PythonDist/
+
 # Build output -- see build_pyinstaller.py / build_bootstrap.py. The
 # release workflow builds these fresh in CI; never commit a local build.
 build/
