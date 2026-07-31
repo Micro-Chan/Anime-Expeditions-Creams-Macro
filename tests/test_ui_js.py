@@ -69,6 +69,28 @@ def test_new_tasks_have_a_bounded_infinite_wave_default(tmp_path):
     assert out["infinite_wave_limit"] == 20
 
 
+def test_extract_after_normalization_preserves_decimal_strings_and_repairs_scientific_notation(
+        tmp_path):
+    out = run_js("""
+        const MAX_EXTRACT_AFTER = 9999;
+        eval(extract('normalizeExtractAfter'));
+        console.log(JSON.stringify([
+          normalizeExtractAfter('25'),
+          normalizeExtractAfter('999999999999999999999999999999999999999999'),
+          normalizeExtractAfter('2.3434734346743343e+43'),
+          normalizeExtractAfter(-1),
+          normalizeExtractAfter(null)
+        ]));
+    """, tmp_path)
+    assert out == [
+        "25",
+        "9999",
+        "9999",
+        "1",
+        "1",
+    ]
+
+
 def test_infinite_task_summary_shows_its_exit_wave(tmp_path):
     out = run_js("""
         const TASK_DATA = { story: { label: 'Story' } };
@@ -183,6 +205,7 @@ def test_remove_block_still_works_one_at_a_time(tmp_path):
 _IMPORT_HARNESS = """
 const world = (data) => new Function('data', `
   const saved = []; const restoredPaths = []; const logs = []; let taskCards = [];
+  const MAX_EXTRACT_AFTER = 9999;
   const enteringTaskIds = new Set();
   function addLog(m) { logs.push(m); }
   function newTaskId() { return 't' + saved.length + Math.random(); }
@@ -201,6 +224,7 @@ const world = (data) => new Function('data', `
     save_tasks: async () => ({ ok: true }),
   } };
   ${extract('importCustomPaths')}
+  ${extract('normalizeExtractAfter')}
   ${extract('importTasks')}
   return { importTasks, saved, restoredPaths, logs, cards: () => taskCards };
 `)(data);
@@ -504,6 +528,7 @@ def test_export_stops_when_a_referenced_macro_no_longer_exists(tmp_path):
 
 _TASK_IMPORT_WORLD = """
 const logs = []; const saved = {}; let confirmAnswer = %s;
+const MAX_EXTRACT_AFTER = 9999;
 global.addLog = m => logs.push(m);
 global.confirm = () => confirmAnswer;
 global.importCustomPaths = async () => 0;
@@ -522,6 +547,7 @@ global.pywebview = { api: {
   list_templates: async () => %s,
   save_template: async (n, b) => { saved[n] = b; },
 }};
+eval(extract('normalizeExtractAfter'));
 eval(extract('importTasks'));
 importTasks().then(() => console.log(JSON.stringify({
   macrosSaved: Object.keys(saved), tasks: taskCards.length,
@@ -1346,4 +1372,89 @@ def test_fuel_card_summarizes_enabled_resources(tmp_path):
         "summary": "Enabled",
         "details": "Resource Drill: Ready | Gold Mine: Off",
     }
+
+
+def test_auto_shop_card_renders_catalog_targets_and_daily_status(tmp_path):
+    body = """
+    global.autoShopState = {
+      enabled: true,
+      shops: {
+        gold_shop: {
+          enabled: true,
+          items: [
+            {
+              key: 'cursed_boba', name: 'Cursed Boba', daily_maximum: 50,
+              enabled: true, target: 'max',
+              state: { status: 'completed', attempts: 0 }
+            },
+            {
+              key: 'trait_crystal', name: 'Trait Crystal', daily_maximum: 25,
+              enabled: true, target: 5,
+              state: { status: 'failed_today', attempts: 3 }
+            },
+            {
+              key: 'mana_flask', name: 'Mana Flask', daily_maximum: 150,
+              enabled: true, target: 5,
+              state: { status: 'retry_pending', attempts: 0 }
+            }
+          ]
+        }
+      }
+    };
+    global.escapeHtml = value => String(value);
+    const mockElements = {
+      'resource-auto-shop-summary': {
+        textContent: '', classList: { toggle: () => {} }
+      },
+      'resource-auto-shop-details': { textContent: '', title: '' },
+      'toggle-auto-shop-enabled': { classList: { toggle: () => {} } },
+      'toggle-gold-shop-enabled': { classList: { toggle: () => {} } },
+      'auto-shop-gold-items': { innerHTML: '' }
+    };
+    global.document = { getElementById: id => mockElements[id] || null };
+
+    eval(extract('autoShopStatusLabel'));
+    eval(extract('renderAutoShopScreen'));
+    renderAutoShopScreen();
+
+    const html = mockElements['auto-shop-gold-items'].innerHTML;
+    console.log(JSON.stringify({
+      summary: mockElements['resource-auto-shop-summary'].textContent,
+      details: mockElements['resource-auto-shop-details'].textContent,
+      hasCursedBoba: html.includes('Cursed Boba'),
+      hasTraitCrystal: html.includes('Trait Crystal'),
+      hasMaximum: html.includes('Daily max: 50'),
+      hasMaxTarget: html.includes("setAutoShopItemMax('gold_shop', 'cursed_boba')"),
+      hasNumericTarget: html.includes('value="5"'),
+      hasResetToday: html.includes("resetAutoShopItemToday('gold_shop', 'trait_crystal')"),
+      hasRetryStatus: html.includes('Retry scheduled'),
+      hasRetryReset: html.includes("resetAutoShopItemToday('gold_shop', 'mana_flask')")
+    }));
+    """
+    out = run_js(body, tmp_path)
+    assert out == {
+        "summary": "Enabled",
+        "details": "Gold Shop: 3 enabled | 1 complete",
+        "hasCursedBoba": True,
+        "hasTraitCrystal": True,
+        "hasMaximum": True,
+        "hasMaxTarget": True,
+        "hasNumericTarget": True,
+        "hasResetToday": True,
+        "hasRetryStatus": True,
+        "hasRetryReset": True,
+    }
+
+
+def test_auto_shop_resource_card_has_required_controls():
+    html = open(INDEX_HTML, encoding="utf-8").read()
+    for element_id in (
+        "resource-card-auto-shop",
+        "resource-auto-shop-summary",
+        "toggle-auto-shop-enabled",
+        "toggle-gold-shop-enabled",
+        "auto-shop-gold-items",
+    ):
+        assert f'id="{element_id}"' in html
+    assert "Numeric quantities repeat on later passes until sold out." in html
 

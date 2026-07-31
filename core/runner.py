@@ -17,6 +17,7 @@ import os
 import threading
 import time
 import traceback
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 
 import cv2
@@ -36,6 +37,32 @@ from .runner_challenge import ChallengeOps
 from .runner_crafting import CraftingOps
 from .runner_expedition import ExpeditionOps
 from .runner_fuel import FuelOps
+from .runner_shop import ShopOps
+
+
+MAX_EXTRACT_AFTER = 9999
+
+
+def _parse_extract_after(value, default=1):
+    """Return a safe Expedition extraction count.
+
+    Task files and presets are user-editable JSON, so this value cannot be
+    trusted to have passed through the number input in the UI. Python integers
+    can hold an arbitrarily large integer, but the browser starts serializing
+    absurd values in scientific notation. Preserve the user's intent to run
+    for as long as possible by clamping valid oversized values to 9,999.
+    """
+    if isinstance(value, bool):
+        return default
+    try:
+        parsed = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        return default
+    if not parsed.is_finite() or parsed < 0 or parsed != parsed.to_integral_value():
+        return default
+    if parsed > MAX_EXTRACT_AFTER:
+        return MAX_EXTRACT_AFTER
+    return int(parsed)
 
 
 def _find_team_load_button(frame, expected_y):
@@ -76,7 +103,7 @@ def _find_team_load_button(frame, expected_y):
     return cx, cy
 
 
-class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ExpeditionOps, BlockOps):
+class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, ExpeditionOps, BlockOps):
     """One run's worth of state -- module-level singleton via main.Api, same
     pattern as core.paths._recorder, since only one run can realistically be
     active at a time (one physical game window, one macro)."""
@@ -85,7 +112,9 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ExpeditionOps, 
                  get_challenge_settings=None, mark_challenge_stage_played=None, get_run_stats=None,
                  get_crafting_settings=None, set_crafting_count=None, get_bounty_settings=None,
                  set_bounty_remaining=None, get_fuel_settings=None,
-                 mark_fuel_refill_result=None, get_hotkeys=None):
+                 mark_fuel_refill_result=None, get_hotkeys=None,
+                 get_auto_shop_settings=None,
+                 save_auto_shop_item_state=None, save_auto_shop_shop_state=None):
         self._mouse = mouse
         self._keyboard = keyboard
         self._log = log
@@ -158,12 +187,17 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ExpeditionOps, 
         # state and reports each station's result.
         self._get_fuel_settings = get_fuel_settings
         self._mark_fuel_refill_result = mark_fuel_refill_result
+        self._get_auto_shop_settings = get_auto_shop_settings
+        self._save_auto_shop_item_state = save_auto_shop_item_state
+        self._save_auto_shop_shop_state = save_auto_shop_shop_state
         self._thread = None
         self._stop_event = None
         self._pause_event = threading.Event()
         self._paused_logged = False
         self._stop_logged = False  # one "Stopped." per stop -- see _checkpoint
         self._debug_screenshots = False
+        # Off by default -- see _apply_team_loadout_panel's OCR confirmation.
+        self._loose_team_ocr_match = False
         self._current_hwnd = None       # set at the top of _run -- lets _checkpoint reach Leave Stage on stop
         self._hwnd_getter = None        # set at the top of _run -- lets _attempt_rejoin find a re-docked hwnd
         self._left_stage_this_run = False
@@ -219,7 +253,7 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ExpeditionOps, 
     def start(self, hwnd_getter, get_tasks, scroll_power: int = None, coords: dict = None,
               scroll_nudges: int = None, debug_screenshots: bool = False, default_walk_paths: dict = None,
               webhook: dict = None, expedition_color_buttons: bool = True,
-              expedition_camera_o_ms: float = 100) -> dict:
+              expedition_camera_o_ms: float = 100, loose_team_ocr_match: bool = False) -> dict:
         if self.is_running():
             return {"ok": False, "reason": "already_running"}
         self._stop_event = threading.Event()
@@ -227,6 +261,7 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ExpeditionOps, 
         self._paused_logged = False
         self._stop_logged = False
         self._debug_screenshots = bool(debug_screenshots)
+        self._loose_team_ocr_match = bool(loose_team_ocr_match)
         self._expedition_color_buttons = bool(expedition_color_buttons)
         try:
             self._expedition_camera_o_ms = max(0.0, float(expedition_camera_o_ms))
@@ -568,7 +603,8 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ExpeditionOps, 
         running -- Play, Story, every stage row, ... -- adds up fast, so this
         only actually writes when the toggle is on. Returns None otherwise,
         which callers fold into their log line's " Debug: ..." suffix."""
-        return vision.save_match_debug(hwnd, name, match) if self._debug_screenshots else None
+        return vision.save_match_debug(
+            hwnd, name, match, log=self._log) if self._debug_screenshots else None
 
     def _run_session(self, *args) -> None:
         """Thread entry for a real run. Wraps _run only to guarantee this
@@ -723,6 +759,10 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ExpeditionOps, 
             self._run_guarded_phase(
                 "Auto Fuel", hwnd, stop_event,
                 lambda: self._run_fuel_refill_if_due(hwnd, stop_event))
+            shop_enabled = self._auto_shop_wants_in()
+            self._run_guarded_phase(
+                "Auto Shop", hwnd, stop_event,
+                lambda: self._run_auto_shop_if_due(hwnd, stop_event))
         if self._checkpoint(stop_event):
             return
 
@@ -737,6 +777,8 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ExpeditionOps, 
             if not tasks:
                 if bounty_enabled:
                     self._log("[Macro] Auto Bounty pass finished and the Task Queue is empty -- going Idle.")
+                elif shop_enabled:
+                    self._log("[Macro] Auto Shop pass finished and the Task Queue is empty -- going Idle.")
                 else:
                     self._log("[Macro] Task queue is empty -- add a task on the Task screen first.")
                 self._set_status(action="Idle")
@@ -802,6 +844,13 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ExpeditionOps, 
                 self._run_guarded_phase(
                     "Auto Fuel", hwnd, stop_event,
                     lambda: self._run_fuel_refill_if_due(hwnd, stop_event))
+                if self._current_hwnd and wm.is_window(self._current_hwnd):
+                    hwnd = self._current_hwnd
+                if self._checkpoint(stop_event):
+                    return
+                self._run_guarded_phase(
+                    "Auto Shop", hwnd, stop_event,
+                    lambda: self._run_auto_shop_if_due(hwnd, stop_event))
                 if self._current_hwnd and wm.is_window(self._current_hwnd):
                     hwnd = self._current_hwnd
                 if self._checkpoint(stop_event):
@@ -977,6 +1026,12 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ExpeditionOps, 
                 # forces Leave Stage now, then the pass runs from the lobby
                 # before this same task is entered again.
                 fuel_wants_in = (not is_last_repeat) and self._fuel_wants_in()
+                # Auto Shop runs last among resource diversions. It uses the
+                # same leave-to-lobby boundary and never interrupts a match.
+                auto_shop_wants_in = (
+                    (not is_last_repeat)
+                    and self._auto_shop_wants_in()
+                )
                 # The bounded-Infinite path and the Leave-at-Minute block
                 # (left_live_match) already left the live match, so there is no
                 # Victory/Defeat screen to process here.
@@ -984,6 +1039,7 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ExpeditionOps, 
                         hwnd, stop_event, task, result, duration, webhook,
                         repeat=(not is_last_repeat) and not challenge_wants_in
                         and not crafting_wants_in and not fuel_wants_in
+                        and not auto_shop_wants_in
                         and not restart_needed):
                     if stop_event.is_set():
                         return False
@@ -1124,6 +1180,40 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ExpeditionOps, 
                         current_repeat=f"{repeat_index + 1} / {repeat_total}",
                         map=map_name,
                         action="Resuming after Auto Fuel...",
+                        mode=mode,
+                        stage=str(task.get("stage") or "-"),
+                        difficulty=task.get("difficulty") or "-",
+                        play_mode=task.get("play_mode") or "solo",
+                        macro=task.get("macro") or "-",
+                    )
+                    if not self._run_task_setup(
+                            hwnd, stop_event, task, mode, map_name, coords,
+                            scroll_power, scroll_nudges, webhook):
+                        if stop_event.is_set():
+                            return False
+                        task_failed = True
+                        break
+                    fresh_entry = True
+                    continue
+
+                if auto_shop_wants_in:
+                    self._log(
+                        f'[Macro] Auto Shop is due. Pausing "{map_name}" '
+                        "at a safe boundary."
+                    )
+                    self._run_auto_shop(hwnd, stop_event)
+                    if self._checkpoint(stop_event):
+                        return False
+                    if self._current_hwnd and wm.is_window(self._current_hwnd):
+                        hwnd = self._current_hwnd
+                    self._log(
+                        f'[Macro] Auto Shop pass finished. Resuming "{map_name}".'
+                    )
+                    self._set_status(
+                        current_task=f"{task_index} / {task_count}",
+                        current_repeat=f"{repeat_index + 1} / {repeat_total}",
+                        map=map_name,
+                        action="Resuming after Auto Shop...",
                         mode=mode,
                         stage=str(task.get("stage") or "-"),
                         difficulty=task.get("difficulty") or "-",
@@ -1475,7 +1565,8 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ExpeditionOps, 
         # "exp_extract_continue" choice on this same screen) every sighting
         # up to extract_after, only accept the one right after that.
         self._expedition_extract_count = 0
-        self._expedition_extract_accept_at = max(0, int(task.get("extract_after") or 0)) + 1
+        self._expedition_extract_accept_at = _parse_extract_after(
+            task.get("extract_after")) + 1
         self._exp_last_sighting_at = 0.0  # fresh match, fresh sighting-debounce clock (see EXP_COLOR_SIGHTING_DEBOUNCE)
         # Spirit City Act 3's boss/cutscene "Click anywhere to close" popup
         # (see _click_close_popup_if_found) only ever shows up there.
@@ -2170,7 +2261,9 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ExpeditionOps, 
         blocks = data.get("blocks") or {}
         if isinstance(blocks, list):
             return True  # old-format template -- same as _run_prestart_blocks
-        team = blocks.get("team") or ""
+        # Read team setting from template blocks or task fallback (handling int/str types)
+        raw_team = blocks.get("team") if blocks.get("team") is not None and blocks.get("team") != "" else task.get("team")
+        team = str(raw_team).strip() if raw_team is not None else ""
         if not team:
             return True
         equipment = blocks.get("equipment") if blocks.get("equipment") in ("include", "exclude") else "include"
@@ -2251,8 +2344,19 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ExpeditionOps, 
                 frame = vision.capture_game_bgr(hwnd)
                 text = ocr_windows.ocr_image(frame) if frame is not None else ""
                 normalized = "".join((text or "").lower().split())
-                if "unitteams" in normalized:
-                    loadout_open = {"detector": "windows_ocr", "text": "Unit Teams"}
+                # Strict by default: "unitteams" (no space) is specific to
+                # this exact screen. Settings > Debug > "Loose Team Panel
+                # Detection" opts into also accepting "teams"/"team"/
+                # "loadout" for setups where the strict text keeps missing --
+                # off by default because those are generic enough to already
+                # appear on the PREVIOUS screen (the still-open Unit Manager,
+                # whose own Teams button reads "Teams"), which would confirm
+                # the panel open before the transition actually happens, right
+                # before a fixed-coordinate row click.
+                keywords = (("unitteams", "loadteam", "teamloadout", "teams", "team", "loadout")
+                            if self._loose_team_ocr_match else ("unitteams",))
+                if any(k in normalized for k in keywords):
+                    loadout_open = {"detector": "windows_ocr", "text": text or "Unit Teams"}
             if loadout_open is not None:
                 break
             if stop_event.is_set():
@@ -2263,7 +2367,7 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ExpeditionOps, 
             self._save_debug_screenshot_unconditional(hwnd, "team_loadout_open_failed")
             return False
         if loadout_open.get("detector") == "windows_ocr":
-            self._log('[Macro] Load Team list open (confirmed by Windows OCR: "Unit Teams").')
+            self._log(f'[Macro] Load Team list open (confirmed by Windows OCR: "{loadout_open.get("text")}").')
         else:
             self._log(f'[Macro] Load Team list open (score {loadout_open["score"]:.2f}).')
         # The title arrives before the row animation has completely settled.

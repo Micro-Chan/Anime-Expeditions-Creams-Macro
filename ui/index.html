@@ -641,7 +641,7 @@
           <div class="setting-row" style="padding: 10px 0;">
             <div>
               <div class="setting-label">Enable Auto Fuel <span id="fuel-summary-status" class="challenge-ready-chip">Disabled</span></div>
-              <div class="setting-desc">Refills enabled Expedition Hub resources every 8 hours at safe Task Queue boundaries.</div>
+              <div class="setting-desc">Refills at safe Task Queue boundaries: Max after 8 hours, or numeric amounts based on their fuel duration.</div>
             </div>
             <button id="toggle-fuel-enabled" class="toggle-switch" onclick="toggleFuelEnabled(this)"></button>
           </div>
@@ -719,6 +719,42 @@
             </div>
             <button class="task-toolbar-btn danger" onclick="resetFuelTimer()">Reset</button>
           </div>
+            </div>
+          </details>
+
+          <!-- Auto Shop -->
+          <details id="resource-card-auto-shop" class="resource-card">
+            <summary class="resource-card-head">
+              <span class="resource-card-icon">S</span>
+              <span class="resource-card-copy">
+                <span class="resource-card-title">Auto Shop</span>
+                <span id="resource-auto-shop-details" class="resource-card-desc">Gold Shop: 0 enabled</span>
+              </span>
+              <span id="resource-auto-shop-summary" class="resource-card-state">Disabled</span>
+              <span class="resource-card-chevron">&#8250;</span>
+            </summary>
+            <div class="resource-card-body">
+              <div class="setting-row" style="padding: 10px 0;">
+                <div>
+                  <div class="setting-label">Enable Auto Shop</div>
+                  <div class="setting-desc">Runs enabled shops at safe Task Queue boundaries and resets daily progress at 00:00 UTC.</div>
+                </div>
+                <button id="toggle-auto-shop-enabled" class="toggle-switch" onclick="toggleAutoShopEnabled(this)"></button>
+              </div>
+
+              <div class="setting-row" style="padding: 10px 0;">
+                <div>
+                  <div class="setting-label">Gold Shop</div>
+                  <div class="setting-desc">Choose how many to buy on each pass. Numeric quantities repeat on later passes until sold out.</div>
+                </div>
+                <button id="toggle-gold-shop-enabled" class="toggle-switch"
+                        onclick="toggleAutoShopShopEnabled('gold_shop', this)"></button>
+              </div>
+
+              <div>
+                <div class="wh-hint" style="margin-bottom: 6px;">Items are checked in this order. Max buys the remaining stock once.</div>
+                <div id="auto-shop-gold-items" class="flex flex-col gap-1.5"></div>
+              </div>
             </div>
           </details>
 
@@ -1165,6 +1201,21 @@
               <div class="setting-desc">Save a screenshot every time the macro finds something while running. Off by default -- gets spammy fast.</div>
             </div>
             <button id="toggle-debug-screenshots" class="toggle-switch" onclick="toggleSetting('debug_screenshots', this)"></button>
+          </div>
+
+          <!-- Off by default: the strict OCR check ("unitteams", no space)
+               is correct for most setups and confirms the Load Team list
+               specifically. This loosens it to also accept "teams"/"team"/
+               "loadout" for setups where the strict text keeps missing --
+               those are generic enough to risk matching the PREVIOUS screen
+               (the Unit Manager, whose own Teams button reads "Teams") right
+               before a fixed-coordinate row click, so it's opt-in. -->
+          <div class="setting-row" style="padding: 14px;">
+            <div>
+              <div class="setting-label">Loose Team Panel Detection</div>
+              <div class="setting-desc">If Team Loadout keeps failing to open on your setup, this widens the OCR check that confirms it. Off by default -- the wider match can misfire on the previous screen.</div>
+            </div>
+            <button id="toggle-loose-team-ocr-match" class="toggle-switch" onclick="toggleSetting('loose_team_ocr_match', this)"></button>
           </div>
 
           <!-- These three decide HOW the game gets captured, which is what

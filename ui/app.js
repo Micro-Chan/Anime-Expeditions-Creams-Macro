@@ -522,7 +522,13 @@ function switchScreen(name) {
 
   if (name === 'creation') { refreshTemplateList(); refreshSavedPaths(); }
   if (name === 'task') refreshTaskQueue();
-  if (name === 'resource') { refreshCraftingScreen(); refreshFuelScreen(); refreshChallengeScreen(); refreshBountyScreen(); }
+  if (name === 'resource') {
+    refreshCraftingScreen();
+    refreshFuelScreen();
+    refreshAutoShopScreen();
+    refreshChallengeScreen();
+    refreshBountyScreen();
+  }
   if (name === 'settings') { refreshSavedPaths(); loadMacroCoords(); loadRewardTestMaps(); }
 
   // The Process Log only exists on the Dashboard, and a display:none element
@@ -1066,6 +1072,8 @@ async function loadSettingsUI() {
     if (actionDelayEl) actionDelayEl.value = s.action_delay_ms || 0;
     const debugScreenshotsEl = document.getElementById('toggle-debug-screenshots');
     if (debugScreenshotsEl) debugScreenshotsEl.classList.toggle('on', !!s.debug_screenshots);
+    const looseTeamOcrEl = document.getElementById('toggle-loose-team-ocr-match');
+    if (looseTeamOcrEl) looseTeamOcrEl.classList.toggle('on', !!s.loose_team_ocr_match);
     const expColorEl = document.getElementById('toggle-expedition-color');
     // Default ON -- the key is simply absent until the user first flips it.
     if (expColorEl) expColorEl.classList.toggle('on', s.expedition_color_buttons !== false);
@@ -2150,6 +2158,7 @@ let enteringTaskIds = new Set();
 let taskTemplates = [];  // Macro Manager template names, for the Macro Operation picker
 let taskSaveTimer = null;
 const DEFAULT_INFINITE_WAVE_LIMIT = 20;
+const MAX_EXTRACT_AFTER = 9999;
 
 function newTaskId() {
   return 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -2168,6 +2177,17 @@ function defaultTask() {
     // nothing like Acts 1-3). See runner._run_act4_diversion.
     act4_on_drop: false, act4_mode: 'once', act4_macro: '',
   };
+}
+
+function normalizeExtractAfter(value) {
+  // Number inputs serialize absurd values in scientific notation. Treat them
+  // as "run as far as supported" instead of saving a value Python's int parser
+  // cannot read when battle begins.
+  const text = String(value ?? '').trim();
+  if (!text) return '1';
+  const number = Number(text);
+  if (!Number.isFinite(number) || !Number.isInteger(number) || number < 0) return '1';
+  return String(Math.min(number, MAX_EXTRACT_AFTER));
 }
 
 function findTask(id) { return taskCards.find(t => t.id === id); }
@@ -2365,6 +2385,7 @@ async function importTasks() {
   let added = 0;
   for (const t of data.tasks) {
     const newTask = { ...defaultTask(), ...t, id: newTaskId() };
+    newTask.extract_after = normalizeExtractAfter(newTask.extract_after);
     taskCards.push(newTask);
     enteringTaskIds.add(newTask.id);
     added++;
@@ -2453,7 +2474,10 @@ async function loadTaskPreset() {
            + `entries) -- the queue was left as it was.`);
     return;
   }
-  usable.forEach(t => { t.stage = String(t.stage); });
+  usable.forEach(t => {
+    t.stage = String(t.stage);
+    t.extract_after = normalizeExtractAfter(t.extract_after);
+  });
 
   // Replaces the queue rather than appending -- Import appends (you're
   // merging someone else's tasks into yours), but loading a preset means
@@ -2716,8 +2740,9 @@ function renderTaskBuilder() {
   }
 
   if (t.mode === 'expedition') {
-    fields.push(field('Extract After', `<input type="number" class="block-input" min="0" value="${t.extract_after}"
-      oninput="setTaskProp('${t.id}', 'extract_after', String(Math.max(0, parseInt(this.value, 10) || 0)))">`, 'Number of extraction prompts to decline before extracting'));
+    fields.push(field('Extract After', `<input type="number" class="block-input" min="0" max="${MAX_EXTRACT_AFTER}" step="1" value="${t.extract_after}"
+      onchange="this.value = normalizeExtractAfter(this.value); setTaskProp('${t.id}', 'extract_after', this.value)">`,
+      `Number of extraction prompts to decline before extracting (maximum ${MAX_EXTRACT_AFTER})`));
   }
 
   // Tournament has no Solo/Matchmaking choice -- "Solo Tournament" is already
@@ -2814,9 +2839,15 @@ async function refreshTaskQueue() {
     // undefined and throw, which aborts renderTaskList() mid-map and leaves
     // the whole list blank while the header still shows a count.
     const dropped = rawTasks.filter(t => !TASK_DATA[t.mode]).length;
+    let repairedExtractAfter = 0;
     taskCards = rawTasks.filter(t => TASK_DATA[t.mode]).map(saved => {
       const t = { ...defaultTask(), ...saved };
       if (t.team == null) t.team = '';
+      const normalizedExtractAfter = normalizeExtractAfter(t.extract_after);
+      if (String(t.extract_after ?? '').trim() !== normalizedExtractAfter) {
+        repairedExtractAfter++;
+      }
+      t.extract_after = normalizedExtractAfter;
       t.stage = String(t.stage);
       if (t.difficulty === 'Infinite' || t.difficulty === 'Mastery') {
         t.stage = t.difficulty;
@@ -2824,8 +2855,13 @@ async function refreshTaskQueue() {
       }
       return t;
     });
-    if (dropped) {
-      addLog(`[Task] Removed ${dropped} task(s) with an unrecognized mode (e.g. old Challenge/Bounty entries).`);
+    if (dropped || repairedExtractAfter) {
+      if (dropped) {
+        addLog(`[Task] Removed ${dropped} task(s) with an unrecognized mode (e.g. old Challenge/Bounty entries).`);
+      }
+      if (repairedExtractAfter) {
+        addLog(`[Task] Adjusted invalid or oversized Expedition "Extract After" value(s) to the supported range.`);
+      }
       saveTaskQueue();
     }
   } catch (e) {
@@ -3375,6 +3411,173 @@ function renderFuelPaths() {
 }
 
 setInterval(renderFuelTimers, 1000);
+
+// ---------------------------------------------------------------------------
+// Auto Shop screen. The backend owns the catalog and daily state; the UI only
+// edits stable shop/item identifiers and their requested daily targets.
+// ---------------------------------------------------------------------------
+let autoShopState = null;
+
+function autoShopStatusLabel(status) {
+  return {
+    completed: 'Complete',
+    out_of_stock: 'Out of stock',
+    max_inventory: 'Max inventory',
+    failed_today: 'Failed today',
+    pending_verification: 'Verifying',
+    retry_pending: 'Retry scheduled',
+    pending: 'Pending',
+  }[status] || 'Pending';
+}
+
+async function refreshAutoShopScreen() {
+  try {
+    autoShopState = await pywebview.api.get_auto_shop_settings();
+  } catch (e) {
+    autoShopState = null;
+  }
+  renderAutoShopScreen();
+}
+
+function renderAutoShopScreen() {
+  const state = autoShopState;
+  const goldShop = state && state.shops ? state.shops.gold_shop : null;
+  const items = (goldShop && goldShop.items) || [];
+  const enabledItems = items.filter(item => item.enabled);
+  const completeItems = enabledItems.filter(
+    item => ['completed', 'out_of_stock', 'max_inventory'].includes(
+      (item.state || {}).status
+    )
+  );
+
+  const summary = document.getElementById('resource-auto-shop-summary');
+  if (summary) {
+    summary.textContent = state && state.enabled ? 'Enabled' : 'Disabled';
+    summary.classList.toggle('active', !!(state && state.enabled));
+  }
+  const details = document.getElementById('resource-auto-shop-details');
+  if (details) {
+    details.textContent = `Gold Shop: ${enabledItems.length} enabled | ${completeItems.length} complete`;
+    details.title = details.textContent;
+  }
+  document.getElementById('toggle-auto-shop-enabled')?.classList.toggle(
+    'on',
+    !!(state && state.enabled)
+  );
+  document.getElementById('toggle-gold-shop-enabled')?.classList.toggle(
+    'on',
+    !!(goldShop && goldShop.enabled)
+  );
+
+  const list = document.getElementById('auto-shop-gold-items');
+  if (!list) return;
+  if (!goldShop) {
+    list.innerHTML = '<div class="rh-empty">Couldn\'t load Auto Shop settings.</div>';
+    return;
+  }
+  list.innerHTML = items.map(item => {
+    const isMax = String(item.target).toLowerCase() === 'max';
+    const numericTarget = isMax ? '' : item.target;
+    const runtime = item.state || {};
+    const attempts = Number(runtime.attempts || 0);
+    const status = autoShopStatusLabel(runtime.status);
+    const isCompleted = runtime.status === 'completed' || runtime.status === 'out_of_stock' || runtime.status === 'max_inventory';
+    const resetToday = runtime.status && runtime.status !== 'pending'
+      ? `<button type="button" class="block-mod-btn" style="padding: 3px 10px; font-size: 11px; border-color: rgba(224, 86, 122, 0.4); color: var(--rose);"
+                 onclick="resetAutoShopItemToday('gold_shop', '${item.key}')">Reset Today</button>`
+      : '';
+    return `
+      <div class="task-card" data-key="${escapeHtml(item.key)}" style="--tqc: var(--amber); cursor: default; padding: 10px 14px; margin-bottom: 6px;">
+        <div class="tq-text" style="width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+          <div style="display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1;">
+            <button class="toggle-switch ${item.enabled ? 'on' : ''}"
+                    onclick="toggleAutoShopItem('gold_shop', '${item.key}', this)"></button>
+            <div style="min-width: 0; flex: 1;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="tq-title" style="font-weight: 600; font-size: 14px; color: var(--text);">${escapeHtml(item.name)}</span>
+                ${resetToday}
+              </div>
+              <div class="setting-desc" style="font-size: 12px; color: var(--text-dim); margin-top: 2px;">
+                Daily max: ${item.daily_maximum} | <span style="color: ${isCompleted ? 'var(--teal)' : 'var(--text-muted)'};">${status}</span>${attempts ? ` | ${attempts}/3 attempts` : ''}
+              </div>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
+            <div class="seg-toggle" style="width: auto;">
+              <button type="button" value="max" class="seg-btn ${isMax ? 'active' : ''}"
+                      onclick="setAutoShopItemMax('gold_shop', '${item.key}')">Max</button>
+              <button type="button" class="seg-btn ${isMax ? '' : 'active'}"
+                      onclick="setAutoShopItemNumberMode('gold_shop', '${item.key}')">Number</button>
+            </div>
+            <input type="number" class="block-input" min="1" max="${item.daily_maximum}"
+                   style="width: 58px; text-align: center; ${isMax ? 'visibility: hidden;' : ''}"
+                   value="${numericTarget}" placeholder="Qty"
+                   onchange="setAutoShopItemTarget('gold_shop', '${item.key}', this.value, ${item.daily_maximum})">
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function toggleAutoShopEnabled(button) {
+  const enabled = !button.classList.contains('on');
+  button.classList.toggle('on', enabled);
+  bounceToggle(button);
+  try { await pywebview.api.set_auto_shop_enabled(enabled); } catch (e) {}
+  await refreshAutoShopScreen();
+}
+
+async function toggleAutoShopShopEnabled(shopKey, button) {
+  const enabled = !button.classList.contains('on');
+  button.classList.toggle('on', enabled);
+  bounceToggle(button);
+  try { await pywebview.api.set_auto_shop_shop_enabled(shopKey, enabled); } catch (e) {}
+  await refreshAutoShopScreen();
+}
+
+async function toggleAutoShopItem(shopKey, itemKey, button) {
+  const enabled = !button.classList.contains('on');
+  button.classList.toggle('on', enabled);
+  bounceToggle(button);
+  try {
+    await pywebview.api.set_auto_shop_item_enabled(shopKey, itemKey, enabled);
+  } catch (e) {}
+  await refreshAutoShopScreen();
+}
+
+async function setAutoShopItemMax(shopKey, itemKey) {
+  try {
+    await pywebview.api.set_auto_shop_item_target(shopKey, itemKey, 'max');
+  } catch (e) {}
+  await refreshAutoShopScreen();
+}
+
+async function setAutoShopItemNumberMode(shopKey, itemKey) {
+  const shop = autoShopState && autoShopState.shops
+    ? autoShopState.shops[shopKey]
+    : null;
+  const item = ((shop && shop.items) || []).find(entry => entry.key === itemKey);
+  const target = item && String(item.target).toLowerCase() !== 'max' ? item.target : 1;
+  await setAutoShopItemTarget(shopKey, itemKey, target, item ? item.daily_maximum : 1);
+}
+
+async function setAutoShopItemTarget(shopKey, itemKey, value, dailyMaximum) {
+  const target = Math.max(1, Math.min(
+    Number(dailyMaximum) || 1,
+    parseInt(value, 10) || 1
+  ));
+  try {
+    await pywebview.api.set_auto_shop_item_target(shopKey, itemKey, target);
+  } catch (e) {}
+  await refreshAutoShopScreen();
+}
+
+async function resetAutoShopItemToday(shopKey, itemKey) {
+  try {
+    await pywebview.api.reset_auto_shop_item_today(shopKey, itemKey);
+  } catch (e) {}
+  await refreshAutoShopScreen();
+}
 
 // Auto Crafting screen (see core/runner_crafting.py). Interleaved like
 // Challenge: after every N qualifying wins it runs one crafting pass. The
@@ -6117,9 +6320,10 @@ function renderCreationLoadout() {
   const el = document.getElementById('creation-loadout');
   if (!el) return;
   const teams = ['', '1', '2', '3', '4', '5', '6', '7', '8'];
+  // Ensure string conversion so numeric values (e.g. 2) match dropdown option strings
   const teamSel = `
     <select class="task-select" onchange="creationTeam = this.value; renderCreationLoadout()">
-      ${teams.map(v => `<option value="${v}" ${v === creationTeam ? 'selected' : ''}>${v === '' ? 'No Team' : 'Team ' + v}</option>`).join('')}
+      ${teams.map(v => `<option value="${v}" ${v === String(creationTeam) ? 'selected' : ''}>${v === '' ? 'No Team' : 'Team ' + v}</option>`).join('')}
     </select>`;
   const eqSeg = creationTeam === '' ? '' : `
     <span class="palette-group-label" style="margin: 0; white-space: nowrap; flex-shrink: 0;">Equipment :</span>
