@@ -522,10 +522,10 @@
 
   <!-- ============ CREATION screen: block-based routine builder ============ -->
   <div id="screen-creation" class="flex-1 flex min-h-0" style="display: none;">
-    <div class="flex flex-col flex-shrink-0 p-3 gap-2 border-r" style="width: 190px; border-color: var(--border);">
-      <h2 class="text-[10px] uppercase tracking-widest font-semibold mb-1" style="color: var(--text-muted);">Blocks</h2>
-      <div id="block-palette" class="flex flex-col gap-2"></div>
-      <p class="text-[10px] mt-2" style="color: var(--text-muted);">Drag a block into a phase below, drag rows to reorder.</p>
+    <div class="flex flex-col flex-shrink-0 p-3 gap-2 border-r min-h-0" style="width: 190px; border-color: var(--border);">
+      <h2 class="text-[10px] uppercase tracking-widest font-semibold mb-1 flex-shrink-0" style="color: var(--text-muted);">Blocks</h2>
+      <div id="block-palette" class="flex flex-col gap-2 flex-1 overflow-y-auto" style="min-height: 0;"></div>
+      <p class="text-[10px] mt-2 flex-shrink-0" style="color: var(--text-muted);">Drag a block into a phase below, drag rows to reorder.</p>
     </div>
 
     <div class="flex-1 flex flex-col p-3 gap-2 min-h-0">

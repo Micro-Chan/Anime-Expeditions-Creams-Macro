@@ -2267,18 +2267,23 @@ async function importCustomPaths(paths) {
 }
 
 // Record block counterpart of collectCustomPathNames/exportCustomPaths/
-// importCustomPaths above. Unlike that one, this recurses into a Detect
-// block's then/else branches -- Record blocks running in Battle/Loop
-// commonly sit inside one (see core.share._iter_blocks, the same
-// traversal the Python side of the Share Code export already uses).
+// importCustomPaths above. Unlike that one, this recurses into a
+// Detect/If/Repeat While block's then/else branches -- Record blocks
+// running in Battle/Loop commonly sit inside one (see
+// core.share._iter_blocks, the same traversal the Python side of the
+// Share Code export already uses). Checks the type names inline rather than
+// BRANCHING_TYPES (defined elsewhere in this file) so this function stays
+// self-contained -- tests/test_ui_js.py's extract() lifts it out and runs
+// it standalone, with nothing else from ui/app.js in scope.
 function collectRecordingNames(templates) {
   const names = new Set();
+  const branching = ['detect', 'if', 'repeat_while'];
   const walk = (blocks) => {
     for (const block of blocks || []) {
       if (!block) continue;
       if (block.type === 'record' && block.params && block.params.recording) {
         names.add(block.params.recording);
-      } else if (block.type === 'detect') {
+      } else if (branching.includes(block.type)) {
         walk(block.then);
         walk(block.else);
       }
@@ -4006,9 +4011,23 @@ const BLOCK_TYPES = {
   set_boolean:        { label: 'Set Boolean',       group: 'Logic',  color: 'var(--slate)', params: [] },
   // Structurally identical to Detect (same nested Then/Else branches, same
   // core.detect.flatten jump shape) but branches on a Set Boolean variable
-  // instead of an image search. Bespoke controls: renderIfControls(); runs
+  // instead of an image search. Bespoke controls: renderBoolNamePicker(); runs
   // via core.runner_blocks._evaluate_if. Allowed in both phases.
   if:                 { label: 'If',                group: 'Logic',  color: 'var(--sky)',   params: [] },
+  // A real loop, unlike Detect/If's one-shot branch: the named Set Boolean
+  // variable is checked ONLY at the top of each pass -- true runs the body
+  // once and loops back to check again, false skips/exits straight past it.
+  // A change made mid-body (a Set Boolean block inside the loop) only takes
+  // effect on the NEXT check, never interrupts the pass already running.
+  // Bespoke controls: renderRepeatWhileRow() (shares renderBoolNamePicker()
+  // with If for the header); the single loop body
+  // lives in the same b.then/b.else BRANCHING_TYPES infra Detect/If use
+  // (b.else always stays empty and is never rendered -- see BRANCHING_TYPES
+  // below). Runs via core.detect.flatten's repeat_while case (a condition
+  // check plus a backward jump instead of Detect/If's forward-only
+  // then/jump/else) and core.runner_blocks._evaluate_if (identical
+  // condition to If). Allowed in both phases, including Pre Start.
+  repeat_while:       { label: 'Repeat While',       group: 'Logic',  color: 'var(--sky)',   params: [] },
 };
 
 // Two phases: Pre Start (walk to your spot, place starter units, flip any
@@ -4033,7 +4052,7 @@ const PHASE_ALLOWED = {
   // path) is a normal addable block, allowed in BOTH phases -- you can drop
   // several into Pre Start to walk between multiple starter-placement spots
   // before the match begins. The Loop phases take the same set as Battle.
-  prestart: ['place_unit', 'setting_change', 'auto_upgrade_unit', 'target_priority', 'click_unit', 'walk', 'record', 'click', 'wait_ms', 'send_key', 'detect', 'set_boolean', 'if'],
+  prestart: ['place_unit', 'setting_change', 'auto_upgrade_unit', 'target_priority', 'click_unit', 'walk', 'record', 'click', 'wait_ms', 'send_key', 'detect', 'set_boolean', 'if', 'repeat_while'],
   battle: _BATTLE_ALLOWED,
   loop_a: _BATTLE_ALLOWED,
   loop_b: _BATTLE_ALLOWED,
@@ -4086,9 +4105,15 @@ function newBlockId() {
 //                                                  e.g. 'battle|d1|then|d2|else'
 function containerPhase(key) { return key.split('|')[0]; }
 
-// Branching block types: both carry nested then/else lists, addressed the
-// same way in container keys (see the comment above containerPhase).
-const BRANCHING_TYPES = ['detect', 'if'];
+// Branching/looping block types: all carry nested then/else lists, addressed
+// the same way in container keys (see the comment above containerPhase).
+// repeat_while piggybacks on this same then/else machinery for its single
+// loop body (stored in .then; .else stays permanently empty and is never
+// rendered) rather than a parallel single-container implementation -- every
+// function below that walks/clones/drags/serializes a branch does so purely
+// by array, with no assumption about what the branch MEANS, so a real third
+// field would just be the same code path under a different name.
+const BRANCHING_TYPES = ['detect', 'if', 'repeat_while'];
 
 function resolveContainer(key) {
   const parts = key.split('|');
@@ -4163,6 +4188,7 @@ function addBlock(type, key, atIndex) {
   }
   if (type === 'set_boolean') { block.params.name = ''; block.params.value = 'True'; }
   if (type === 'if') { Object.assign(block, { boolName: '', then: [], else: [] }); }
+  if (type === 'repeat_while') { Object.assign(block, { boolName: '', then: [], else: [] }); }
   const list = resolveContainer(key);
   if (!list) return;
   if (atIndex == null) list.push(block);
@@ -4994,7 +5020,7 @@ function renderTargetPriorityControls(b) {
 
 // Set Boolean: a free-typed variable name (same text field Place Unit's
 // name uses) + True/False, read later by an If block (see listBooleanNames,
-// renderIfControls, core.runner_blocks._run_set_boolean_tick).
+// renderBoolNamePicker, core.runner_blocks._run_set_boolean_tick).
 function renderSetBooleanControls(b) {
   const name = blkField('Name', `<input class="block-input" style="width:130px;" type="text" value="${escapeHtml(b.params.name)}" placeholder="variable name" oninput="updateBlockParam('${b.id}', 'name', this.value)">`);
   const current = String(b.params.value ?? 'True');
@@ -5012,6 +5038,7 @@ function renderBlockRow(b, key) {
   const phase = containerPhase(key);
   if (b.type === 'detect') return renderDetectRow(b, key);
   if (b.type === 'if') return renderIfRow(b, key);
+  if (b.type === 'repeat_while') return renderRepeatWhileRow(b, key);
   // place_unit and click render ALL their fields bespoke (labeled X/Y +
   // the Set picker button) -- the generic anonymous param inputs would
   // duplicate them.
@@ -5137,7 +5164,7 @@ function renderIfRow(b, key) {
       <div class="detect-head">
         <span class="block-drag-handle">&#8942;&#8942;</span>
         <span class="block-label">${def.label}</span>
-        ${renderIfControls(b)}
+        ${renderBoolNamePicker(b)}
         <span class="flex-1"></span>
         <div class="block-actions">
           <span class="block-clone" onclick="cloneBlock('${b.id}')" data-tooltip="Clone">&#10697;</span>
@@ -5152,22 +5179,53 @@ function renderIfRow(b, key) {
   `;
 }
 
-function renderIfControls(b) {
+function renderBoolNamePicker(b) {
   const names = listBooleanNames();
   const options = names.map(n =>
     `<option value="${escapeHtml(n)}" ${b.boolName === n ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('');
   return `<div class="detect-controls">
-    <select class="block-input" style="width:auto;" onchange="setIfBoolName('${b.id}', this.value)">
+    <select class="block-input" style="width:auto;" onchange="setBlockBoolName('${b.id}', this.value)">
       <option value="">Variable...</option>${options}
     </select>
   </div>`;
 }
 
-function setIfBoolName(id, name) {
+function setBlockBoolName(id, name) {
   const loc = findBlockLocation(id);
   if (!loc) return;
   loc.container[loc.idx].boolName = name;
   renderPhases();
+}
+
+// A Repeat While block: same header shape as If (a boolean-variable picker),
+// but ONE nested drop-zone instead of Then/Else -- the loop body, checked
+// against the variable at the top of every pass (see core.detect.flatten's
+// repeat_while case and core.runner_blocks._evaluate_if). b.else exists on
+// the data (BRANCHING_TYPES machinery expects it) but is never rendered and
+// never gets a block dropped into it -- there's nothing to show there.
+function renderRepeatWhileRow(b, key) {
+  const def = BLOCK_TYPES.repeat_while;
+  const entering = enteringBlockIds.has(b.id) ? ' entering' : '';
+  return `
+    <div class="block-row block-detect${entering}" style="--blk: ${def.color};" draggable="true" data-id="${b.id}"
+         ondragstart="event.stopPropagation(); if (['INPUT','SELECT','BUTTON','TEXTAREA'].includes(event.target.tagName)) { event.preventDefault(); return false; } event.dataTransfer.setData('block-reorder', '${b.id}')"
+         ondragover="onBlockRowDragOver(event, '${key}', '${b.id}')"
+         ondrop="onBlockDrop(event, '${key}', '${b.id}')">
+      <div class="detect-head">
+        <span class="block-drag-handle">&#8942;&#8942;</span>
+        <span class="block-label">${def.label}</span>
+        ${renderBoolNamePicker(b)}
+        <span class="flex-1"></span>
+        <div class="block-actions">
+          <span class="block-clone" onclick="cloneBlock('${b.id}')" data-tooltip="Clone">&#10697;</span>
+          <span class="block-delete" onclick="removeBlock('${b.id}')" data-tooltip="Remove">&times;</span>
+        </div>
+      </div>
+      <div class="detect-branches">
+        ${renderDetectBranch(b, key, 'then', 'Body', 'runs while true, re-checked at the top of every pass')}
+      </div>
+    </div>
+  `;
 }
 
 // ---------------------------------------------------------------------------
@@ -7039,7 +7097,7 @@ function blockFromSaved(b) {
     block.loopAttempts = Math.max(0, Math.floor(Number(b.loopAttempts) || 0));
     block.loopIntervalMs = Math.max(100, Math.min(60000, Math.floor(Number(b.loopIntervalMs) || 1000)));
   }
-  if (b.type === 'if') block.boolName = b.boolName || '';
+  if (b.type === 'if' || b.type === 'repeat_while') block.boolName = b.boolName || '';
   if (BRANCHING_TYPES.includes(b.type)) {
     block.then = (Array.isArray(b.then) ? b.then : []).map(blockFromSaved);
     block.else = (Array.isArray(b.else) ? b.else : []).map(blockFromSaved);

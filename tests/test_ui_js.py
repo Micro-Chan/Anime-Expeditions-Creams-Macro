@@ -1185,7 +1185,7 @@ def test_set_boolean_and_if_block_types_registered(tmp_path):
         hasIfType: src.includes("if:"),
         inPrestartAllowed: src.includes("'set_boolean'") && src.includes("'if'"),
         hasSetBooleanControls: src.includes("function renderSetBooleanControls"),
-        hasIfControls: src.includes("function renderIfControls"),
+        hasBoolNamePicker: src.includes("function renderBoolNamePicker"),
         hasIfRow: src.includes("function renderIfRow"),
         hasListBooleanNames: src.includes("function listBooleanNames")
     }));
@@ -1195,15 +1195,33 @@ def test_set_boolean_and_if_block_types_registered(tmp_path):
     assert out["hasIfType"] is True
     assert out["inPrestartAllowed"] is True
     assert out["hasSetBooleanControls"] is True
-    assert out["hasIfControls"] is True
+    assert out["hasBoolNamePicker"] is True
     assert out["hasIfRow"] is True
     assert out["hasListBooleanNames"] is True
+
+
+def test_repeat_while_block_type_registered(tmp_path):
+    body = """
+    console.log(JSON.stringify({
+        hasType: src.includes("repeat_while:"),
+        inPrestartAllowed: src.includes("'if', 'repeat_while'"),
+        inBranchingTypes: src.includes("['detect', 'if', 'repeat_while']"),
+        hasRow: src.includes("function renderRepeatWhileRow"),
+        hasBoolNamePicker: src.includes("function renderBoolNamePicker")
+    }));
+    """
+    out = run_js(body, tmp_path)
+    assert out["hasType"] is True
+    assert out["inPrestartAllowed"] is True
+    assert out["inBranchingTypes"] is True
+    assert out["hasRow"] is True
+    assert out["hasBoolNamePicker"] is True
 
 
 def test_list_boolean_names_walks_branches_in_order_deduped(tmp_path):
     """listBooleanNames collects distinct Set Boolean names, first-appearance
     order, descending into both Detect and If then/else branches -- the
-    option list If's own dropdown (renderIfControls) is built from."""
+    option list If's own dropdown (renderBoolNamePicker) is built from."""
     out = run_js("""
       global.PHASES = ['prestart', 'battle'];
       global.BRANCHING_TYPES = ['detect', 'if'];

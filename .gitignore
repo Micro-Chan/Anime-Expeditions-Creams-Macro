@@ -55,3 +55,7 @@ dist/
 
 # Personal Claude Code permission grants -- not team-wide.
 .claude/settings.local.json
+
+debug.log.2
+
+debug.log.1

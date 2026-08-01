@@ -191,6 +191,19 @@ class BlockOps:
                 self._battle_block_index += 1 if found else block.get("_else_offset", 1)
                 self._battle_block_state = {}
                 return
+            if btype == "repeat_while":
+                # Same condition as "if" (_evaluate_if), checked once per
+                # tick here -- true steps into the body (index += 1, same as
+                # If's Then), false skips past the whole loop via
+                # _else_offset (flatten's repeat_while case). The body's own
+                # backward _jump (appended by flatten) is what brings
+                # execution back here for the next pass' check -- ordinary
+                # _jump dispatch above, nothing repeat_while-specific there.
+                found = self._evaluate_if(block)
+                self._log_repeat_while_outcome(block, found, self._battle_block_index + 1, "Battle")
+                self._battle_block_index += 1 if found else block.get("_else_offset", 1)
+                self._battle_block_state = {}
+                return
             # place_unit numbering is now the block's own static _ordinal
             # (stamped by flatten over the whole prestart+battle tree, so a
             # not-taken detect branch never shifts anyone's number) -- no
@@ -957,6 +970,18 @@ class BlockOps:
                     self._log_if_outcome(block, found, step, "Pre Start")
                     idx += 1 if found else block.get("_else_offset", 1)
                     continue
+                if btype == "repeat_while":
+                    # Same condition as "if" (_evaluate_if); the body's own
+                    # backward _jump (see core.detect.flatten's repeat_while
+                    # case) is what brings idx back here for the next pass'
+                    # check -- ordinary _jump handling above, nothing
+                    # repeat_while-specific there. The stop_event check at
+                    # the top of this very loop still runs every pass, so a
+                    # condition that never goes false is still interruptible.
+                    found = self._evaluate_if(block)
+                    self._log_repeat_while_outcome(block, found, step, "Pre Start")
+                    idx += 1 if found else block.get("_else_offset", 1)
+                    continue
                 if block.get("once") and not first_repeat:
                     # "Once" (see the block's Once chip in Creation) means only
                     # the task's FIRST entry into this stage runs it -- e.g. a
@@ -1071,6 +1096,16 @@ class BlockOps:
         name = block.get("boolName") or "(none set)"
         branch = "Then" if found else "Else"
         self._log(f'{label}: "{name}" is {found} -- running {branch} branch.')
+
+    def _log_repeat_while_outcome(self, block: dict, found: bool, num: int, phase_label: str) -> None:
+        """Report a Repeat While block's condition check -- same variable
+        read _log_if_outcome reports, but phrased as looping vs exiting
+        rather than a one-shot branch (see _evaluate_if, reused as-is for
+        the condition itself)."""
+        label = f"{phase_label} block #{num} (Repeat While)"
+        name = block.get("boolName") or "(none set)"
+        verdict = "looping" if found else "done -- exiting the loop"
+        self._log(f'{label}: "{name}" is {found} -- {verdict}.')
 
     def _run_set_boolean_tick(self, block: dict, block_num: int, phase_label: str = "Battle") -> None:
         """One-shot: sets a named boolean variable to True/False -- creates

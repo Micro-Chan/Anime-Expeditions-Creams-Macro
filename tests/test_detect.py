@@ -449,3 +449,100 @@ def test_prestart_looped_detect_waits_until_found(monkeypatch):
     )
     assert result is True
     assert sleeps == [0.1]
+
+
+# --------------------------------------------------------------------------
+# Repeat While: a real loop (not a one-shot branch like Detect/If) over the
+# same named-boolean condition If reads -- checked only at the top of each
+# pass, backward _jump instead of Detect/If's forward-only then/jump/else.
+# --------------------------------------------------------------------------
+def test_flatten_repeat_while_offsets_skip_or_loop_back():
+    blocks = [
+        {"type": "repeat_while", "boolName": "go",
+         "then": [{"type": "place_unit", "params": {}}, {"type": "wait_ms"}],
+         "else": []},
+        {"type": "place_unit", "params": {}},
+    ]
+    flat, nxt = detect.flatten(blocks, 1)
+    types = [b["type"] for b in flat]
+    assert types == ["repeat_while", "place_unit", "wait_ms", "_jump", "place_unit"]
+    assert [b.get("_ordinal") for b in flat] == [None, 1, None, None, 2]
+    assert nxt == 3
+    rw_block, loop_back = flat[0], flat[3]
+    # False -> skip the whole construct (body + loop-back jump), landing on
+    # the place_unit right after it.
+    assert 0 + rw_block["_else_offset"] == 4
+    # After the body finishes, jump BACKWARD to the repeat_while itself to
+    # re-check the condition -- not forward past it like detect/if's own
+    # trailing _jump does.
+    assert 3 + loop_back["_offset"] == 0
+
+
+def test_battle_tick_repeat_while_skips_body_when_false_from_start():
+    runner = MacroRunner(MagicMock(), MagicMock(), MagicMock())
+    runner._battle_block_index = 0
+    runner._battle_block_state = {}
+    runner._log = lambda *a, **k: None
+    runner._macro_booleans = {"go": False}
+    recorded = []
+    runner._run_send_key_tick = lambda stop, block, num, phase_label="Battle": recorded.append(block.get("_tag"))
+
+    flat, _ = rb.detect.flatten([
+        {"type": "repeat_while", "boolName": "go",
+         "then": [{"type": "send_key", "_tag": "body"}], "else": []},
+        {"type": "send_key", "_tag": "after"},
+    ])
+    _drive_battle(runner, flat)
+    assert recorded == ["after"]
+
+
+def test_battle_tick_repeat_while_runs_body_once_then_exits():
+    """The condition is re-checked at the top of the very next pass, so a
+    body that flips its own variable to False stops the loop after exactly
+    one pass instead of running again."""
+    runner = MacroRunner(MagicMock(), MagicMock(), MagicMock())
+    runner._battle_block_index = 0
+    runner._battle_block_state = {}
+    runner._log = lambda *a, **k: None
+    runner._macro_booleans = {"go": True}
+    recorded = []
+    runner._run_send_key_tick = lambda stop, block, num, phase_label="Battle": recorded.append(block.get("_tag"))
+
+    flat, _ = rb.detect.flatten([
+        {"type": "repeat_while", "boolName": "go", "then": [
+            {"type": "send_key", "_tag": "body"},
+            {"type": "set_boolean", "params": {"name": "go", "value": "False"}},
+        ], "else": []},
+        {"type": "send_key", "_tag": "after"},
+    ])
+    _drive_battle(runner, flat)
+    assert recorded == ["body", "after"]
+    assert runner._macro_booleans == {"go": False}
+
+
+def test_battle_tick_repeat_while_loops_multiple_passes_then_exits():
+    """Proves the backward jump actually re-enters the body more than once
+    -- not just a single conditional skip -- by flipping the condition from
+    OUTSIDE the loop body (a real Set Boolean can't count) once the body has
+    run three times."""
+    runner = MacroRunner(MagicMock(), MagicMock(), MagicMock())
+    runner._battle_block_index = 0
+    runner._battle_block_state = {}
+    runner._log = lambda *a, **k: None
+    runner._macro_booleans = {"go": True}
+    recorded = []
+
+    def fake_send_key(stop, block, num, phase_label="Battle"):
+        recorded.append(block.get("_tag"))
+        if recorded.count("body") >= 3:
+            runner._macro_booleans["go"] = False
+
+    runner._run_send_key_tick = fake_send_key
+
+    flat, _ = rb.detect.flatten([
+        {"type": "repeat_while", "boolName": "go",
+         "then": [{"type": "send_key", "_tag": "body"}], "else": []},
+        {"type": "send_key", "_tag": "after"},
+    ])
+    _drive_battle(runner, flat)
+    assert recorded == ["body", "body", "body", "after"]

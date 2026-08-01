@@ -1,4 +1,5 @@
-"""Detect/If blocks -- the macro's branching primitives.
+"""Detect/If/Repeat While blocks -- the macro's branching and looping
+primitives.
 
 A `detect` block searches for an image (or a combination of images, or a raw
 condition expression) and runs one of two nested block lists: `then` when the
@@ -8,6 +9,10 @@ branches on a named boolean variable (set by a Set Boolean block, read via
 runner_blocks._evaluate_if) instead of an image search -- see
 runner_blocks._run_battle_blocks_tick/_run_prestart_blocks, which evaluate
 the two differently but flatten them through the exact same code here.
+`repeat_while` reads the same boolean condition as `if`, but instead of a
+one-shot branch it's a real loop: its body (also stored in `then`; `else` is
+unused) runs and then jumps BACKWARD to re-check the condition, checked only
+ever at the top of a pass -- see its case in _flatten_into below.
 
 The runner executes a FLAT block list with a single index (see
 core.runner_blocks). To leave that engine essentially unchanged, flatten()
@@ -22,7 +27,8 @@ synthetic control ops:
 Both branches stay inline in the flat list, so place_unit blocks are numbered
 by their static position (then before else) no matter which branch runs at
 runtime -- the same order ui/app.js's listPlacedUnits() walks, so "unit #N"
-means the same unit on both sides.
+means the same unit on both sides. repeat_while's body is numbered the same
+way, once, regardless of how many times it actually loops at runtime.
 """
 import ast
 
@@ -104,6 +110,26 @@ def _flatten_into(blocks, flat, ordinal):
             # After the then branch runs and falls through to _jump, skip the
             # else branch entirely.
             jump["_offset"] = end_index - jump_index
+        elif btype == "repeat_while":
+            # Same named-boolean condition as "if" (see runner_blocks.
+            # _evaluate_if), but a real loop instead of a one-shot branch: the
+            # body (stored in "then", same as everywhere else -- see
+            # ui/app.js's BRANCHING_TYPES comment for why; "else" is unused
+            # and always empty) runs, then an unconditional _jump sends
+            # execution BACKWARD to re-check the condition, instead of
+            # detect/if's forward-only then/jump/else shape. A false
+            # condition -- checked only ever at the top of a pass -- skips
+            # straight past the body AND that backward jump in one step.
+            ctrl = dict(block)
+            flat.append(ctrl)
+            start_index = len(flat) - 1
+            ordinal = _flatten_into(block.get("then") or [], flat, ordinal)
+            loop_back = {"type": "_jump"}
+            flat.append(loop_back)
+            loop_back_index = len(flat) - 1
+            end_index = len(flat)
+            ctrl["_else_offset"] = end_index - start_index
+            loop_back["_offset"] = start_index - loop_back_index
         else:
             flat.append(block)
     return ordinal
