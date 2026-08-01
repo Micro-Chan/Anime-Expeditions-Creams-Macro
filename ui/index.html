@@ -771,6 +771,8 @@
             </summary>
             <div class="resource-card-body">
 
+          <div id="challenge-setup-warning" class="resource-setup-warning" style="display: none;"></div>
+
           <div class="setting-row" style="padding: 10px 0;">
             <div>
               <div class="setting-label">Story Map Setup</div>
@@ -840,6 +842,8 @@
               <span class="resource-card-chevron">&#8250;</span>
             </summary>
             <div class="resource-card-body">
+
+          <div id="bounty-setup-warning" class="resource-setup-warning" style="display: none;"></div>
 
           <div class="setting-row" style="padding: 10px 0;">
             <div>
@@ -2034,7 +2038,6 @@
       </div>
       <div class="modal-body">
         <div class="wh-hint" style="margin-bottom: 8px;">Assign the Macro Operation Auto Bounty should run for each Story destination.</div>
-        <div id="bounty-setup-warning" class="bounty-setup-warning" style="display: none;"></div>
         <div id="bounty-map-list" style="max-height: 60vh; overflow-y: auto;"></div>
       </div>
     </div>
@@ -2263,6 +2266,28 @@
           </div>
         </div>
 
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ Detect test modal ============
+       Shows one full Roblox-window frame plus the exact Detect verdict and
+       scores, without running either nested branch or changing the macro. -->
+  <div id="detect-test-modal" class="modal-overlay" style="display:none;" onmousedown="if(event.target===this) closeDetectTest()">
+    <div class="modal-panel detect-test-panel">
+      <div class="modal-head">
+        <span class="modal-title">Test Detect</span>
+        <span class="modal-close" onclick="closeDetectTest()">&times;</span>
+      </div>
+      <div class="modal-body detect-test-body">
+        <div id="detect-test-status" class="detect-test-status missed">Waiting for test...</div>
+        <div id="detect-test-meta" class="detect-test-meta"></div>
+        <div class="detect-test-layout">
+          <div class="detect-test-preview-wrap">
+            <img id="detect-test-image" class="detect-test-image" alt="Detect test capture">
+          </div>
+          <div id="detect-test-details" class="detect-test-details"></div>
+        </div>
       </div>
     </div>
   </div>

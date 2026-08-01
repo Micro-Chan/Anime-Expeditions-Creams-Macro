@@ -954,6 +954,7 @@ class Api:
             saved_map = (saved.get("maps") or {}).get(m) or {}
             merged_maps[m] = {"macro": saved_map.get("macro") or ""}
         merged["maps"] = merged_maps
+        merged.update(self._challenge_macro_setup(merged))
 
         reset_period = _current_challenge_reset_period()
         merged["daily"]["ready"] = merged["daily"]["last_completed_period"] != reset_period
@@ -998,6 +999,26 @@ class Api:
 
     def set_challenge_enabled(self, enabled: bool) -> dict:
         challenge = self.get_challenge_settings()
+        if enabled and not challenge["setup_ready"]:
+            challenge["enabled"] = False
+            cfg.update({"challenge": challenge})
+            missing = ", ".join(challenge["missing_maps"])
+            invalid = ", ".join(
+                f'{item["map"]} ("{item["macro"]}")'
+                for item in challenge["invalid_maps"])
+            details = "; ".join(part for part in (
+                f"unassigned: {missing}" if missing else "",
+                f"missing or old macros: {invalid}" if invalid else "",
+            ) if part)
+            self.push_log(
+                "[Macro] Auto Challenge was not enabled. Assign a saved Macro Operation "
+                f"to every Story map first ({details}).")
+            return {
+                "ok": False,
+                "reason": "incomplete_challenge_maps",
+                "missing_maps": challenge["missing_maps"],
+                "invalid_maps": challenge["invalid_maps"],
+            }
         challenge["enabled"] = bool(enabled)
         cfg.update({"challenge": challenge})
         return {"ok": True}
@@ -1012,6 +1033,26 @@ class Api:
 
     def set_daily_challenge_enabled(self, enabled: bool) -> dict:
         challenge = self.get_challenge_settings()
+        if enabled and not challenge["setup_ready"]:
+            challenge["daily"]["enabled"] = False
+            cfg.update({"challenge": challenge})
+            missing = ", ".join(challenge["missing_maps"])
+            invalid = ", ".join(
+                f'{item["map"]} ("{item["macro"]}")'
+                for item in challenge["invalid_maps"])
+            details = "; ".join(part for part in (
+                f"unassigned: {missing}" if missing else "",
+                f"missing or old macros: {invalid}" if invalid else "",
+            ) if part)
+            self.push_log(
+                "[Macro] Daily Challenge was not enabled. Assign a saved Macro Operation "
+                f"to every Story map first ({details}).")
+            return {
+                "ok": False,
+                "reason": "incomplete_challenge_maps",
+                "missing_maps": challenge["missing_maps"],
+                "invalid_maps": challenge["invalid_maps"],
+            }
         challenge["daily"]["enabled"] = bool(enabled)
         cfg.update({"challenge": challenge})
         return {"ok": True}
@@ -1077,8 +1118,18 @@ class Api:
             return {"ok": False, "reason": "bad_map"}
         challenge = self.get_challenge_settings()
         challenge["maps"][map_name]["macro"] = macro or ""
+        setup = self._challenge_macro_setup(challenge)
+        auto_disabled = bool(
+            (challenge.get("enabled") or challenge.get("daily", {}).get("enabled"))
+            and not setup["setup_ready"])
+        if auto_disabled:
+            challenge["enabled"] = False
+            challenge["daily"]["enabled"] = False
+            self.push_log(
+                f'[Macro] Auto Challenge was disabled because "{map_name}" no longer '
+                "has a usable Macro Operation.")
         cfg.update({"challenge": challenge})
-        return {"ok": True}
+        return {"ok": True, "auto_disabled": auto_disabled, **setup}
 
     def reset_challenge_counts(self) -> dict:
         challenge = self.get_challenge_settings()
@@ -1108,20 +1159,19 @@ class Api:
         }
 
     @staticmethod
-    def _bounty_macro_setup(settings: dict) -> dict:
+    def _story_macro_setup(settings: dict, map_names) -> dict:
         """Whether every possible Story destination has a usable macro.
 
-        Auto Bounty does not know which map the board will request until
-        after it opens that objective. Starting with only some maps
-        configured therefore guarantees that a later objective can enter a
-        battle with no Pre Start blocks and no units. Treat the five-map
-        assignment as one required setup instead of discovering the hole
-        after teleporting.
+        Both Auto Bounty and Auto Challenge choose a Story destination at
+        runtime. Starting with only some maps configured therefore guarantees
+        that a later objective can enter a battle with no Pre Start blocks and
+        no units. Treat the full map assignment as one required setup instead
+        of discovering the hole after teleporting.
         """
         maps = settings.get("maps") or {}
         missing_maps = []
         invalid_maps = []
-        for map_name in BOUNTY_STORY_MAPS:
+        for map_name in map_names:
             macro_name = str((maps.get(map_name) or {}).get("macro") or "").strip()
             if not macro_name:
                 missing_maps.append(map_name)
@@ -1137,6 +1187,14 @@ class Api:
             "missing_maps": missing_maps,
             "invalid_maps": invalid_maps,
         }
+
+    @staticmethod
+    def _challenge_macro_setup(settings: dict) -> dict:
+        return Api._story_macro_setup(settings, CHALLENGE_STORY_MAPS)
+
+    @staticmethod
+    def _bounty_macro_setup(settings: dict) -> dict:
+        return Api._story_macro_setup(settings, BOUNTY_STORY_MAPS)
 
     @staticmethod
     def _save_bounty_settings(settings: dict) -> None:
@@ -2887,6 +2945,73 @@ class Api:
         self.push_log(f"[Debug] Saved screenshot to {path}")
         return {"ok": True, "path": path}
 
+    def debug_test_detect(self, block: dict) -> dict:
+        """Test one Detect block against the current full Roblox window.
+
+        This is deliberately read-only: it captures one normalized frame,
+        evaluates the block's existing image/region/threshold logic against
+        that frame, and returns an annotated preview. It never runs either
+        branch or changes the saved macro.
+        """
+        if not isinstance(block, dict):
+            return {"ok": False, "reason": "bad_block"}
+        hwnd = self.game_hwnd
+        if not hwnd or not wm.is_window(hwnd):
+            return {"ok": False, "reason": "no_roblox"}
+
+        temporarily_shown = False
+        try:
+            import base64
+            import cv2
+            from core import detect, vision
+
+            # Detect blocks are commonly edited on Settings/Macro Manager,
+            # where the native Roblox child is hidden behind the UI. A screen
+            # grab in that state sees our own panel, not Roblox. Show it only
+            # for this read-only capture and restore the prior visibility
+            # before returning the preview to the frontend.
+            is_visible = getattr(wm, "is_window_visible", None)
+            was_visible = bool(is_visible(hwnd)) if is_visible else True
+            if not was_visible:
+                self.show_game()
+                temporarily_shown = True
+                time.sleep(0.05)
+
+            # capture_game_bgr returns the whole normalized Roblox client in
+            # the same reference space normal Detect searches use. Keeping it
+            # in memory means every score and every drawn box describes the
+            # exact frame shown in the preview.
+            frame = vision.capture_game_bgr(hwnd)
+            if frame is None or frame.size == 0:
+                return {"ok": False, "reason": "capture_failed"}
+            report = detect.diagnose_frame(frame, block)
+            preview = detect.render_diagnostic(frame, report)
+            encoded_ok, encoded = cv2.imencode(".png", preview)
+            if not encoded_ok:
+                return {"ok": False, "reason": "encode_failed"}
+
+            region = report.get("region")
+            self.push_log(
+                f"[Debug] Detect test: {'FOUND' if report['found'] else 'not found'} -- "
+                f"{len(report.get('details', []))} image condition(s) checked."
+            )
+            return {
+                "ok": True,
+                "found": bool(report["found"]),
+                "region": ({"x": region[0], "y": region[1], "w": region[2], "h": region[3]}
+                            if region is not None else None),
+                "details": report.get("details", []),
+                "data_uri": "data:image/png;base64," + base64.b64encode(encoded.tobytes()).decode("ascii"),
+                "width": int(preview.shape[1]),
+                "height": int(preview.shape[0]),
+            }
+        except Exception as exc:
+            self.push_log(f"[Debug] Detect test failed: {exc}")
+            return {"ok": False, "reason": "test_failed"}
+        finally:
+            if temporarily_shown:
+                self.hide_game()
+
     def debug_test_expedition_wave(self) -> dict:
         # Settings > Debug > "Test Expedition Wave Check": runs one tick of
         # the Expedition nav_start_game/exp_continue/exp_extract check
@@ -4304,7 +4429,8 @@ def _launch_ui():
                 # slow boot isn't hit with a second launch, and skipped when
                 # other Roblox windows are open -- the deep link's single-
                 # instance handling would force-close them (alt accounts).
-                if not hwnd and api._resume_after_relaunch:
+                if (not hwnd and api._resume_after_relaunch
+                        and not api.runner.is_rejoin_pending()):
                     try:
                         want_reopen = cfg.load().get("auto_relaunch_roblox", True)
                     except Exception:
@@ -4320,6 +4446,8 @@ def _launch_ui():
                             api._roblox_relaunch_at = now  # also rate-limits this log
                             api.push_log("Roblox closed mid-run, but other Roblox windows are open -- "
                                          "not auto-reopening (it would close them).")
+                        elif not api.runner.claim_rejoin_launch():
+                            api.push_log("Roblox rejoin started elsewhere -- not auto-reopening a second instance.")
                         else:
                             from core.runner_constants import REJOIN_DEEPLINK
                             api._roblox_relaunch_at = now
@@ -4327,6 +4455,7 @@ def _launch_ui():
                                 os.startfile(REJOIN_DEEPLINK)
                                 api.push_log("Roblox closed mid-run -- reopening the game automatically...")
                             except OSError as exc:
+                                api.runner.cancel_rejoin_launch()
                                 api.push_log(f"Couldn't auto-reopen Roblox: {exc}")
 
                 if hwnd and (not api.docker.docked or hwnd != api.game_hwnd):
