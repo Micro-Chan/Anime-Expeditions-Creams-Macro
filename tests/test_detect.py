@@ -631,3 +631,74 @@ def test_battle_tick_repeat_while_loops_multiple_passes_then_exits():
     ])
     _drive_battle(runner, flat)
     assert recorded == ["body", "body", "body", "after"]
+
+
+# --------------------------------------------------------------------------
+# At Checkpoint: structurally an "if" (body in "then", "else" unused), but
+# the condition is an internal engine flag (self._expedition_checkpoint_state)
+# rather than a user boolean, and the "then" branch falls through to a
+# release marker instead of a plain _jump -- see core.runner_expedition's
+# idle/holding/released handoff.
+# --------------------------------------------------------------------------
+def test_flatten_at_checkpoint_offsets_skip_or_fall_through():
+    blocks = [
+        {"type": "at_checkpoint",
+         "then": [{"type": "place_unit", "params": {}}, {"type": "wait_ms"}],
+         "else": []},
+        {"type": "place_unit", "params": {}},
+    ]
+    flat, nxt = detect.flatten(blocks, 1)
+    types = [b["type"] for b in flat]
+    assert types == ["at_checkpoint", "place_unit", "wait_ms", "_at_checkpoint_release", "place_unit"]
+    assert [b.get("_ordinal") for b in flat] == [None, 1, None, None, 2]
+    assert nxt == 3
+    ctrl = flat[0]
+    # False -> skip straight past the release marker too, landing on the
+    # place_unit right after the whole construct -- same end_index the True
+    # path reaches after the release marker advances past itself.
+    assert 0 + ctrl["_else_offset"] == 4
+
+
+def test_battle_tick_at_checkpoint_skips_body_when_idle():
+    runner = MacroRunner(MagicMock(), MagicMock(), MagicMock())
+    runner._battle_block_index = 0
+    runner._battle_block_state = {}
+    runner._log = lambda *a, **k: None
+    runner._expedition_checkpoint_state = "idle"
+    runner._expedition_checkpoint_seen = False
+    recorded = []
+    runner._run_send_key_tick = lambda stop, block, num, phase_label="Battle": recorded.append(block.get("_tag"))
+
+    flat, _ = rb.detect.flatten([
+        {"type": "at_checkpoint", "then": [{"type": "send_key", "_tag": "body"}], "else": []},
+        {"type": "send_key", "_tag": "after"},
+    ])
+    _drive_battle(runner, flat)
+    assert recorded == ["after"]
+    # Reached at all (even though it took the False branch) proves this
+    # instance is alive -- the checkpoint search reads this before ever
+    # pausing (see runner_expedition).
+    assert runner._expedition_checkpoint_seen is True
+
+
+def test_battle_tick_at_checkpoint_runs_body_and_releases_when_holding():
+    runner = MacroRunner(MagicMock(), MagicMock(), MagicMock())
+    runner._battle_block_index = 0
+    runner._battle_block_state = {}
+    runner._log = lambda *a, **k: None
+    runner._expedition_checkpoint_state = "holding"
+    runner._expedition_checkpoint_seen = False
+    recorded = []
+    runner._run_send_key_tick = lambda stop, block, num, phase_label="Battle": recorded.append(block.get("_tag"))
+
+    flat, _ = rb.detect.flatten([
+        {"type": "at_checkpoint", "then": [{"type": "send_key", "_tag": "body"}], "else": []},
+        {"type": "send_key", "_tag": "after"},
+    ])
+    _drive_battle(runner, flat)
+    assert recorded == ["body", "after"]
+    assert runner._expedition_checkpoint_seen is True
+    # The release marker hands the checkpoint search "released", not back to
+    # "idle" directly -- see runner_expedition's handoff for why (acting on
+    # the very next check, not re-pausing on the same still-visible sighting).
+    assert runner._expedition_checkpoint_state == "released"

@@ -204,6 +204,32 @@ class BlockOps:
                 self._battle_block_index += 1 if found else block.get("_else_offset", 1)
                 self._battle_block_state = {}
                 return
+            if btype == "at_checkpoint":
+                # Reached at all (true or false branch) proves this specific
+                # instance is actually alive in the current block tree --
+                # see runner_expedition's checkpoint search, which only ever
+                # pauses for a sighting when this has been set at least once
+                # this match. Sticky (never reset except at match start): a
+                # block that stops being reachable later (e.g. behind an If
+                # that flips False) is a macro-authoring mistake, not
+                # something this flag tries to detect after the fact.
+                self._expedition_checkpoint_seen = True
+                found = self._expedition_checkpoint_state == "holding"
+                self._log_at_checkpoint_outcome(found, self._battle_block_index + 1, "Battle")
+                self._battle_block_index += 1 if found else block.get("_else_offset", 1)
+                self._battle_block_state = {}
+                return
+            if btype == "_at_checkpoint_release":
+                # The body just ran to completion this pass -- hand the
+                # checkpoint search a "released" state (not straight back to
+                # "holding"'s opposite) so it acts on the very next check
+                # instead of re-pausing on the same still-visible sighting.
+                # See runner_expedition's checkpoint search for the
+                # holding/released/idle handoff. Pure bookkeeping, no game
+                # action -- never costs a tick, same as _jump above.
+                self._expedition_checkpoint_state = "released"
+                self._battle_block_index += 1
+                continue
             # place_unit numbering is now the block's own static _ordinal
             # (stamped by flatten over the whole prestart+battle tree, so a
             # not-taken detect branch never shifts anyone's number) -- no
@@ -1108,6 +1134,16 @@ class BlockOps:
         name = block.get("boolName") or "(none set)"
         verdict = "looping" if found else "done -- exiting the loop"
         self._log(f'{label}: "{name}" is {found} -- {verdict}.')
+
+    def _log_at_checkpoint_outcome(self, found: bool, num: int, phase_label: str) -> None:
+        """Report an At Checkpoint block's condition check -- the condition
+        isn't a user boolean (see _evaluate_if) but the internal Expedition
+        checkpoint state machine (self._expedition_checkpoint_state, set by
+        runner_expedition's checkpoint search), so this gets its own logger
+        instead of reusing _log_if_outcome/_log_repeat_while_outcome."""
+        label = f"{phase_label} block #{num} (At Checkpoint)"
+        verdict = "checkpoint is up -- running placement" if found else "no checkpoint waiting -- skipping"
+        self._log(f'{label}: {verdict}.')
 
     def _run_set_boolean_tick(self, block: dict, block_num: int, phase_label: str = "Battle") -> None:
         """One-shot: sets a named boolean variable to True/False -- creates

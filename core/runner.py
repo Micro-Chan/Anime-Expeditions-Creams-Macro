@@ -259,6 +259,16 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
         # -- both reset alongside the battle block state in _play_one_match.
         self._expedition_extract_count = 0
         self._expedition_extract_accept_at = 1
+        # At Checkpoint (Loop A/B, Expedition only) handoff with the
+        # checkpoint search in runner_expedition -- see its docstring for the
+        # idle/holding/released state machine. _expedition_checkpoint_seen is
+        # the sticky "a live At Checkpoint block exists" flag; both reset
+        # alongside the extract-count state above, same lifecycle, so a
+        # leftover "holding" from a stopped/recovered previous match can
+        # never bleed into a new one and stall it on a checkpoint that will
+        # never actually appear.
+        self._expedition_checkpoint_state = "idle"
+        self._expedition_checkpoint_seen = False
         # Consecutive-loss fail-safe (see MAX_CONSECUTIVE_LOSSES_SAME_MAP):
         # how many losses in a row on _consecutive_loss_map so far -- reset
         # to 0 on any win, or restarted at 1 for a new map, so only a real
@@ -1674,6 +1684,8 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
         self._expedition_extract_count = 0
         self._expedition_extract_accept_at = _parse_extract_after(
             task.get("extract_after")) + 1
+        self._expedition_checkpoint_state = "idle"
+        self._expedition_checkpoint_seen = False
         self._exp_last_sighting_at = 0.0  # fresh match, fresh sighting-debounce clock (see EXP_COLOR_SIGHTING_DEBOUNCE)
         # Spirit City Act 3's boss/cutscene "Click anywhere to close" popup
         # (see _click_close_popup_if_found) only ever shows up there.

@@ -129,6 +129,22 @@ class ExpeditionOps:
                        f"(score {defeat_match['score']:.2f}).{suffix}")
             return "loss"
 
+        # At Checkpoint (Loop A/B block, see runner_blocks) has asked to hold
+        # this click -- it detected the exact same checkpoint sighting a
+        # moment ago (see the offers_extract/extract_match branches below,
+        # both engines) and its body is running (or about to) while the
+        # camera's still on the checkpoint screen. Short-circuit BELOW the
+        # shared checks above (start-game re-check, reward card, defeat --
+        # those still matter even mid-hold) but above either engine's
+        # detection, so neither one re-searches or re-clicks while a live
+        # At Checkpoint block is mid-run. Released back to "idle" by the
+        # detection branches themselves once the body finishes (see
+        # runner_blocks' "_at_checkpoint_release" dispatch, which sets
+        # "released" -- the transition through "released" back to "idle"
+        # happens the next time this function actually acts on it).
+        if self._expedition_checkpoint_state == "holding":
+            return None
+
         # Checkpoint handling forks by engine here: color-first (the
         # default -- one cheap pixel search plus the mirror-symmetry rule,
         # see the EXP_COLOR_* block) or the original template path below
@@ -150,6 +166,20 @@ class ExpeditionOps:
         except vision.TemplateNotFound:
             extract_match = None
         if extract_match is not None:
+            # A live At Checkpoint block (Loop A/B) gets exactly one shot at
+            # this sighting: pause here on its first appearance ("idle" ->
+            # "holding", see the short-circuit above this fork), then act on
+            # it for real once released ("released" -> "idle", falling
+            # through to the unchanged logic below). No live block at all
+            # (self._expedition_checkpoint_seen never set this match) means
+            # this whole check is a no-op and behavior is identical to
+            # before At Checkpoint existed.
+            if self._expedition_checkpoint_state == "idle" and self._expedition_checkpoint_seen:
+                self._expedition_checkpoint_state = "holding"
+                self._log('[Macro] Found "exp_extract" -- an At Checkpoint block is waiting to run '
+                           'before this is clicked.')
+                return None
+            self._expedition_checkpoint_state = "idle"
             self._expedition_extract_count += 1
             debug_path = self._debug_save(hwnd, "exp_extract", extract_match)
             suffix = f" Debug: {debug_path}" if debug_path else ""
@@ -344,6 +374,17 @@ class ExpeditionOps:
         offers_extract = cont["cx"] > center_x + EXP_COLOR_MIRROR_MARGIN
 
         if offers_extract:
+            # Same idle/holding/released handoff as the template path above
+            # (_check_expedition_wave_result) -- see its comment for the
+            # reasoning. Plain wave-Continue (the else branch below, not
+            # offering Extract) never pauses: camera alignment matters only
+            # at an actual Extract/Continue choice.
+            if self._expedition_checkpoint_state == "idle" and self._expedition_checkpoint_seen:
+                self._expedition_checkpoint_state = "holding"
+                self._log('[Macro] Checkpoint offers Extract -- an At Checkpoint block is waiting to run '
+                           'before this is clicked.')
+                return None
+            self._expedition_checkpoint_state = "idle"
             now = time.time()
             if now - self._exp_last_sighting_at > EXP_COLOR_SIGHTING_DEBOUNCE:
                 self._expedition_extract_count += 1

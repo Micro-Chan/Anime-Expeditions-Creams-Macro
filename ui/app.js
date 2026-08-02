@@ -2285,8 +2285,8 @@ async function importCustomPaths(paths) {
 
 // Record block counterpart of collectCustomPathNames/exportCustomPaths/
 // importCustomPaths above. Unlike that one, this recurses into a
-// Detect/If/Repeat While block's then/else branches -- Record blocks
-// running in Battle/Loop commonly sit inside one (see
+// Detect/If/Repeat While/At Checkpoint block's then/else branches -- Record
+// blocks running in Battle/Loop commonly sit inside one (see
 // core.share._iter_blocks, the same traversal the Python side of the
 // Share Code export already uses). Checks the type names inline rather than
 // BRANCHING_TYPES (defined elsewhere in this file) so this function stays
@@ -2294,7 +2294,7 @@ async function importCustomPaths(paths) {
 // it standalone, with nothing else from ui/app.js in scope.
 function collectRecordingNames(templates) {
   const names = new Set();
-  const branching = ['detect', 'if', 'repeat_while'];
+  const branching = ['detect', 'if', 'repeat_while', 'at_checkpoint'];
   const walk = (blocks) => {
     for (const block of blocks || []) {
       if (!block) continue;
@@ -4068,6 +4068,14 @@ const BLOCK_TYPES = {
   // then/jump/else) and core.runner_blocks._evaluate_if (identical
   // condition to If). Allowed in both phases, including Pre Start.
   repeat_while:       { label: 'Repeat While',       group: 'Logic',  color: 'var(--sky)',   params: [] },
+  // Loop A/B only (Expedition) -- see PHASE_ALLOWED below. Same then/else
+  // branching shape as Repeat While (one body drop-zone, "else" unused) but
+  // no boolean picker at all: the condition is internal to the Expedition
+  // checkpoint search, not a user variable (see core.runner_expedition's
+  // idle/holding/released handoff and core.detect.flatten's at_checkpoint
+  // case). At most one per template -- see the singleton guard in addBlock/
+  // cloneBlock below.
+  at_checkpoint:      { label: 'At Checkpoint',      group: 'Logic',  color: 'var(--sky)',   params: [] },
 };
 
 // Two phases: Pre Start (walk to your spot, place starter units, flip any
@@ -4083,7 +4091,10 @@ const BLOCK_TYPES = {
 const PHASES = ['prestart', 'battle', 'loop_a', 'loop_b'];
 const PHASE_LABELS = { prestart: 'Pre Start', battle: 'Battle', loop_a: 'Loop A', loop_b: 'Loop B' };
 const PHASE_TAGS = { prestart: 'Setup', battle: 'Combat', loop_a: 'Repeats', loop_b: 'Repeats' };
-const _BATTLE_ALLOWED = Object.keys(BLOCK_TYPES).filter(t => t !== 'walk_path');
+// at_checkpoint is excluded here the same way walk_path is -- it's Loop A/B
+// only (added back explicitly below), not plain Battle. See PHASE_ALLOWED's
+// loop_a/loop_b comment for why.
+const _BATTLE_ALLOWED = Object.keys(BLOCK_TYPES).filter(t => t !== 'walk_path' && t !== 'at_checkpoint');
 const PHASE_ALLOWED = {
   // walk_path is deliberately in NEITHER palette: it's the one unique
   // pinned block -- every routine always has exactly one in Pre Start
@@ -4094,8 +4105,14 @@ const PHASE_ALLOWED = {
   // before the match begins. The Loop phases take the same set as Battle.
   prestart: ['place_unit', 'setting_change', 'auto_upgrade_unit', 'target_priority', 'click_unit', 'walk', 'record', 'click', 'wait_ms', 'send_key', 'detect', 'set_boolean', 'if', 'repeat_while'],
   battle: _BATTLE_ALLOWED,
-  loop_a: _BATTLE_ALLOWED,
-  loop_b: _BATTLE_ALLOWED,
+  // at_checkpoint is Loop A/B only, not plain Battle -- Battle's block list
+  // only ever gets a single pass through the whole match (see
+  // core.runner_blocks._run_battle_blocks_tick's docstring), so it would
+  // only ever get one lifetime chance to catch a checkpoint sighting.
+  // Loop A/B restart from the top every lap (_tick_loop_phases), which is
+  // what lets it catch every sighting across a whole Expedition run.
+  loop_a: [..._BATTLE_ALLOWED, 'at_checkpoint'],
+  loop_b: [..._BATTLE_ALLOWED, 'at_checkpoint'],
 };
 
 let creationPhases = { prestart: [], battle: [], loop_a: [], loop_b: [] };
@@ -4147,13 +4164,14 @@ function containerPhase(key) { return key.split('|')[0]; }
 
 // Branching/looping block types: all carry nested then/else lists, addressed
 // the same way in container keys (see the comment above containerPhase).
-// repeat_while piggybacks on this same then/else machinery for its single
-// loop body (stored in .then; .else stays permanently empty and is never
-// rendered) rather than a parallel single-container implementation -- every
-// function below that walks/clones/drags/serializes a branch does so purely
-// by array, with no assumption about what the branch MEANS, so a real third
-// field would just be the same code path under a different name.
-const BRANCHING_TYPES = ['detect', 'if', 'repeat_while'];
+// repeat_while and at_checkpoint both piggyback on this same then/else
+// machinery for their single body (stored in .then; .else stays permanently
+// empty and is never rendered) rather than a parallel single-container
+// implementation -- every function below that walks/clones/drags/serializes
+// a branch does so purely by array, with no assumption about what the
+// branch MEANS, so a real third field would just be the same code path
+// under a different name.
+const BRANCHING_TYPES = ['detect', 'if', 'repeat_while', 'at_checkpoint'];
 
 function resolveContainer(key) {
   const parts = key.split('|');
@@ -4196,12 +4214,37 @@ function _findInContainer(list, key, id) {
 // `key` is a container key (a phase, or a Detect branch -- see
 // findBlockLocation). Palette clicks pass a bare phase; drops pass whichever
 // container was dropped into.
+// Recursively counts blocks of a given type across Loop A + Loop B only --
+// same then/else descent listPlacedUnits/listBooleanNames use below. Backs
+// the "at most one At Checkpoint block" guard in addBlock/cloneBlock: its
+// hold/release state on the Python side is one shared flag (see
+// core.runner_expedition's idle/holding/released handoff), which can't tell
+// two instances apart -- a second one racing the first to release the hold
+// would reintroduce exactly the camera-misalignment bug this block exists
+// to prevent.
+function countLoopBlocksOfType(type) {
+  let count = 0;
+  const walk = (list) => {
+    for (const b of list) {
+      if (b.type === type) count++;
+      if (BRANCHING_TYPES.includes(b.type)) { walk(b.then || []); walk(b.else || []); }
+    }
+  };
+  walk(creationPhases.loop_a || []);
+  walk(creationPhases.loop_b || []);
+  return count;
+}
+
 function addBlock(type, key, atIndex) {
   const def = BLOCK_TYPES[type];
   if (!def) return;
   const phase = containerPhase(key);
   if (!allowedInContainer(type, key)) {
     addLog(`[Macro Manager] "${def.label}" can't go in ${PHASE_LABELS[phase] || phase}.`);
+    return;
+  }
+  if (type === 'at_checkpoint' && countLoopBlocksOfType('at_checkpoint') > 0) {
+    addLog('[Macro Manager] Only one "At Checkpoint" block is allowed per routine.');
     return;
   }
   const params = {};
@@ -4229,6 +4272,7 @@ function addBlock(type, key, atIndex) {
   if (type === 'set_boolean') { block.params.name = ''; block.params.value = 'True'; }
   if (type === 'if') { Object.assign(block, { boolName: '', then: [], else: [] }); }
   if (type === 'repeat_while') { Object.assign(block, { boolName: '', then: [], else: [] }); }
+  if (type === 'at_checkpoint') { Object.assign(block, { then: [], else: [] }); }
   const list = resolveContainer(key);
   if (!list) return;
   if (atIndex == null) list.push(block);
@@ -4271,9 +4315,25 @@ function removeBlock(id) {
 
 // Duplicates a block right below itself, params and modifiers included --
 // for repeating a nearly-identical step without re-picking everything.
+// Whether a block or any of its then/else descendants is (or contains) an
+// At Checkpoint -- deepCloneBlock recurses into every BRANCHING_TYPES
+// branch, so cloning an If/Detect/Repeat While that happens to have an At
+// Checkpoint nested inside it would create a second instance just as
+// easily as cloning At Checkpoint directly.
+function containsAtCheckpoint(block) {
+  if (block.type === 'at_checkpoint') return true;
+  if (!BRANCHING_TYPES.includes(block.type)) return false;
+  return (block.then || []).some(containsAtCheckpoint) || (block.else || []).some(containsAtCheckpoint);
+}
+
 function cloneBlock(id) {
   const loc = findBlockLocation(id);
   if (!loc) return;
+  // Same singleton reasoning as addBlock's guard.
+  if (containsAtCheckpoint(loc.block)) {
+    addLog('[Macro Manager] Only one "At Checkpoint" block is allowed per routine -- can\'t clone it.');
+    return;
+  }
   const copy = deepCloneBlock(loc.block);
   enteringBlockIds.add(copy.id);
   loc.container.splice(loc.idx + 1, 0, copy);
@@ -5079,6 +5139,7 @@ function renderBlockRow(b, key) {
   if (b.type === 'detect') return renderDetectRow(b, key);
   if (b.type === 'if') return renderIfRow(b, key);
   if (b.type === 'repeat_while') return renderRepeatWhileRow(b, key);
+  if (b.type === 'at_checkpoint') return renderAtCheckpointRow(b, key);
   // place_unit and click render ALL their fields bespoke (labeled X/Y +
   // the Set picker button) -- the generic anonymous param inputs would
   // duplicate them.
@@ -5263,6 +5324,39 @@ function renderRepeatWhileRow(b, key) {
       </div>
       <div class="detect-branches">
         ${renderDetectBranch(b, key, 'then', 'Body', 'runs while true, re-checked at the top of every pass')}
+      </div>
+    </div>
+  `;
+}
+
+// At Checkpoint (Loop A/B only, Expedition -- see PHASE_ALLOWED): no boolean
+// picker at all, unlike If/Repeat While -- its condition isn't a user
+// variable, it's the Expedition checkpoint search itself pausing right
+// before it would click Extract/Continue (core.runner_expedition's idle/
+// holding/released handoff). ONE nested drop-zone like Repeat While, but
+// the body runs once per checkpoint sighting rather than looping -- meant
+// for Place Unit blocks that need the checkpoint screen's camera alignment
+// to place correctly, which is lost the instant Continue/Extract is
+// actually clicked.
+function renderAtCheckpointRow(b, key) {
+  const def = BLOCK_TYPES.at_checkpoint;
+  const entering = enteringBlockIds.has(b.id) ? ' entering' : '';
+  return `
+    <div class="block-row block-detect${entering}" style="--blk: ${def.color};" draggable="true" data-id="${b.id}"
+         ondragstart="event.stopPropagation(); if (['INPUT','SELECT','BUTTON','TEXTAREA'].includes(event.target.tagName)) { event.preventDefault(); return false; } event.dataTransfer.setData('block-reorder', '${b.id}')"
+         ondragover="onBlockRowDragOver(event, '${key}', '${b.id}')"
+         ondrop="onBlockDrop(event, '${key}', '${b.id}')">
+      <div class="detect-head">
+        <span class="block-drag-handle">&#8942;&#8942;</span>
+        <span class="block-label">${def.label}</span>
+        <span class="flex-1"></span>
+        <div class="block-actions">
+          <span class="block-clone" onclick="cloneBlock('${b.id}')" data-tooltip="Clone">&#10697;</span>
+          <span class="block-delete" onclick="removeBlock('${b.id}')" data-tooltip="Remove">&times;</span>
+        </div>
+      </div>
+      <div class="detect-branches">
+        ${renderDetectBranch(b, key, 'then', 'Body', 'runs once the Extract/Continue checkpoint appears, before it is clicked')}
       </div>
     </div>
   `;

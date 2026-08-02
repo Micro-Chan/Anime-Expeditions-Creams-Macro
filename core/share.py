@@ -111,12 +111,13 @@ def decode_template_code(input_str: str) -> dict:
 
 
 def _count_block_list(blocks) -> int:
-    """Length of a block list, counting a Detect/If/Repeat While block's
-    nested then/else blocks too (each still a real block the user built)."""
+    """Length of a block list, counting a Detect/If/Repeat While/At Checkpoint
+    block's nested then/else blocks too (each still a real block the user
+    built)."""
     total = 0
     for b in blocks:
         total += 1
-        if isinstance(b, dict) and b.get("type") in ("detect", "if", "repeat_while"):
+        if isinstance(b, dict) and b.get("type") in ("detect", "if", "repeat_while", "at_checkpoint"):
             total += _count_block_list(b.get("then") or []) + _count_block_list(b.get("else") or [])
     return total
 
@@ -141,13 +142,13 @@ def count_template_blocks(blocks) -> int:
 def _iter_blocks(blocks):
     """Yield every block dict in a template, whatever shape its container is:
     a flat list, a phase dict (prestart/battle/loop_a/loop_b/legacy -- any
-    list-valued key), and a Detect/If/Repeat While block's nested then/else
-    (Repeat While's loop body lives in "then" too, same as ui/app.js's
-    BRANCHING_TYPES -- "else" is unused for it, walked anyway since it's
-    always empty). Mirrors the traversal count_template_blocks uses so both
-    agree on what counts as a block. Non-block list values (e.g. an
-    equipment list) get walked too but harmlessly -- callers filter by block
-    "type"."""
+    list-valued key), and a Detect/If/Repeat While/At Checkpoint block's
+    nested then/else (Repeat While's loop body and At Checkpoint's body both
+    live in "then" too, same as ui/app.js's BRANCHING_TYPES -- "else" is
+    unused for either, walked anyway since it's always empty). Mirrors the
+    traversal count_template_blocks uses so both agree on what counts as a
+    block. Non-block list values (e.g. an equipment list) get walked too but
+    harmlessly -- callers filter by block "type"."""
     if isinstance(blocks, list):
         items = blocks
     elif isinstance(blocks, dict):
@@ -158,7 +159,7 @@ def _iter_blocks(blocks):
         if not isinstance(b, dict):
             continue
         yield b
-        if b.get("type") in ("detect", "if", "repeat_while"):
+        if b.get("type") in ("detect", "if", "repeat_while", "at_checkpoint"):
             yield from _iter_blocks(b.get("then") or [])
             yield from _iter_blocks(b.get("else") or [])
 

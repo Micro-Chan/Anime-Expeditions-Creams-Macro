@@ -1262,7 +1262,7 @@ def test_repeat_while_block_type_registered(tmp_path):
     console.log(JSON.stringify({
         hasType: src.includes("repeat_while:"),
         inPrestartAllowed: src.includes("'if', 'repeat_while'"),
-        inBranchingTypes: src.includes("['detect', 'if', 'repeat_while']"),
+        inBranchingTypes: src.includes("['detect', 'if', 'repeat_while', 'at_checkpoint']"),
         hasRow: src.includes("function renderRepeatWhileRow"),
         hasBoolNamePicker: src.includes("function renderBoolNamePicker")
     }));
@@ -1273,6 +1273,78 @@ def test_repeat_while_block_type_registered(tmp_path):
     assert out["inBranchingTypes"] is True
     assert out["hasRow"] is True
     assert out["hasBoolNamePicker"] is True
+
+
+def test_at_checkpoint_block_type_registered(tmp_path):
+    body = """
+    console.log(JSON.stringify({
+        hasType: src.includes("at_checkpoint:"),
+        inBranchingTypes: src.includes("['detect', 'if', 'repeat_while', 'at_checkpoint']"),
+        inLoopAllowed: src.includes("loop_a: [..._BATTLE_ALLOWED, 'at_checkpoint']")
+            && src.includes("loop_b: [..._BATTLE_ALLOWED, 'at_checkpoint']"),
+        excludedFromBattleAllowed: src.includes("t !== 'walk_path' && t !== 'at_checkpoint'"),
+        // The unchanged prestart array still ends right at 'repeat_while' --
+        // checking this exact tail (not just "absence of at_checkpoint",
+        // which false-positive-matches the BRANCHING_TYPES array literal
+        // elsewhere in the file) proves prestart itself was never touched.
+        notInPrestartAllowed: src.includes("'set_boolean', 'if', 'repeat_while'],"),
+        hasRow: src.includes("function renderAtCheckpointRow"),
+        hasSingletonGuardInAdd: src.includes("countLoopBlocksOfType('at_checkpoint') > 0"),
+        hasSingletonGuardInClone: src.includes("containsAtCheckpoint(loc.block)")
+    }));
+    """
+    out = run_js(body, tmp_path)
+    assert out["hasType"] is True
+    assert out["inBranchingTypes"] is True
+    assert out["inLoopAllowed"] is True
+    assert out["excludedFromBattleAllowed"] is True
+    assert out["notInPrestartAllowed"] is True
+    assert out["hasRow"] is True
+    assert out["hasSingletonGuardInAdd"] is True
+    assert out["hasSingletonGuardInClone"] is True
+
+
+def test_count_loop_blocks_of_type_counts_loop_a_and_b_including_nested(tmp_path):
+    """Backs the singleton guard in addBlock: at_checkpoint is only allowed
+    in Loop A/B, so counting must ignore Pre Start/Battle entirely and still
+    descend into nested branches (a misconfigured but technically legal
+    placement, e.g. inside an If)."""
+    out = run_js("""
+      global.BRANCHING_TYPES = ['detect', 'if', 'repeat_while', 'at_checkpoint'];
+      global.creationPhases = {
+        prestart: [{ type: 'at_checkpoint', then: [], else: [] }],
+        battle: [{ type: 'at_checkpoint', then: [], else: [] }],
+        loop_a: [
+          { type: 'if', boolName: 'x',
+            then: [{ type: 'at_checkpoint', then: [], else: [] }], else: [] },
+        ],
+        loop_b: [{ type: 'wait_ms', params: {} }],
+      };
+      eval(extract('countLoopBlocksOfType'));
+      console.log(JSON.stringify(countLoopBlocksOfType('at_checkpoint')));
+    """, tmp_path)
+    assert out == 1
+
+
+def test_contains_at_checkpoint_finds_direct_and_nested_instances(tmp_path):
+    """Backs the singleton guard in cloneBlock: deepCloneBlock recurses into
+    every BRANCHING_TYPES branch, so cloning a parent block with At
+    Checkpoint nested inside it would create a second instance just as
+    easily as cloning it directly -- containsAtCheckpoint has to catch both."""
+    out = run_js("""
+      global.BRANCHING_TYPES = ['detect', 'if', 'repeat_while', 'at_checkpoint'];
+      eval(extract('containsAtCheckpoint'));
+      const plain = { type: 'wait_ms' };
+      const direct = { type: 'at_checkpoint', then: [], else: [] };
+      const nested = { type: 'if', boolName: 'x',
+        then: [{ type: 'at_checkpoint', then: [], else: [] }], else: [] };
+      console.log(JSON.stringify({
+        plain: containsAtCheckpoint(plain),
+        direct: containsAtCheckpoint(direct),
+        nested: containsAtCheckpoint(nested),
+      }));
+    """, tmp_path)
+    assert out == {"plain": False, "direct": True, "nested": True}
 
 
 def test_list_boolean_names_walks_branches_in_order_deduped(tmp_path):
@@ -1354,7 +1426,8 @@ def test_loop_phases_registered(tmp_path):
     console.log(JSON.stringify({
         inPhases: src.includes("['prestart', 'battle', 'loop_a', 'loop_b']"),
         hasLabels: src.includes("loop_a: 'Loop A'") && src.includes("loop_b: 'Loop B'"),
-        allowed: src.includes("loop_a: _BATTLE_ALLOWED") && src.includes("loop_b: _BATTLE_ALLOWED")
+        allowed: src.includes("loop_a: [..._BATTLE_ALLOWED, 'at_checkpoint']")
+            && src.includes("loop_b: [..._BATTLE_ALLOWED, 'at_checkpoint']")
     }));
     """
     out = run_js(body, tmp_path)

@@ -14,6 +14,20 @@ one-shot branch it's a real loop: its body (also stored in `then`; `else` is
 unused) runs and then jumps BACKWARD to re-check the condition, checked only
 ever at the top of a pass -- see its case in _flatten_into below.
 
+`at_checkpoint` (Loop A/B only -- Expedition) is also structurally an `if`
+(body in `then`, `else` unused), but its condition isn't a user boolean at
+all: it's an internal engine flag (self._expedition_checkpoint_state, see
+runner_blocks._run_battle_blocks_tick and runner_expedition's checkpoint
+detection) that the Expedition extract/continue checkpoint search sets right
+before it would otherwise click through, so the block's body -- normally
+Place Unit blocks -- gets to run while the checkpoint screen is up and the
+camera is still aligned, instead of after Continue/Extract has already been
+clicked and the view has moved on. Unlike `if`, its flatten shape appends a
+release marker (_at_checkpoint_release) after the body instead of a plain
+_jump, so the dispatcher can tell the engine "the body just finished -- the
+checkpoint search is clear to act now" the moment the body's last block
+completes.
+
 The runner executes a FLAT block list with a single index (see
 core.runner_blocks). To leave that engine essentially unchanged, flatten()
 expands each detect/if block into a flat instruction stream with two
@@ -132,6 +146,24 @@ def _flatten_into(blocks, flat, ordinal):
             end_index = len(flat)
             ctrl["_else_offset"] = end_index - start_index
             loop_back["_offset"] = start_index - loop_back_index
+        elif btype == "at_checkpoint":
+            # Structurally a forward-only "if" (body in "then", "else"
+            # unused) -- but instead of "then" falling through to a plain
+            # _jump past an (unused) else branch, it falls through to a
+            # release marker. Both the true path (ran the body, hit the
+            # release marker, which advances past itself) and the false path
+            # (skipped straight past the release marker via _else_offset)
+            # land on the exact same end_index, so the checkpoint state
+            # machine only ever gets released when the body genuinely ran to
+            # completion, never when the condition was false to begin with.
+            ctrl = dict(block)
+            flat.append(ctrl)
+            start_index = len(flat) - 1
+            ordinal = _flatten_into(block.get("then") or [], flat, ordinal)
+            release = {"type": "_at_checkpoint_release"}
+            flat.append(release)
+            end_index = len(flat)
+            ctrl["_else_offset"] = end_index - start_index
         else:
             flat.append(block)
     return ordinal
