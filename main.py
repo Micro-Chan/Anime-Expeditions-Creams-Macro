@@ -30,6 +30,11 @@ from core.runner import MacroRunner
 from core import updater
 from core import auto_shop
 from core.auto_shop import current_auto_shop_period
+from core.runner_constants import (
+    BOUNTY_MYTHIC_DEFAULT_REROLLS,
+    BOUNTY_MYTHIC_MIN_REROLLS,
+    BOUNTY_MYTHIC_MAX_REROLLS,
+)
 
 # Imported at module scope (not inside the darwin branches that use it) so the
 # macOS-only geometry helpers below can be plain module functions. window_mac
@@ -184,6 +189,11 @@ MACRO_COORD_DEFAULTS = {
     "challenge_stage_3_x": 460, "challenge_stage_3_y": 533,
     "expedition_difficulty_x": 441, "expedition_difficulty_y": 524,
     "team_loadout_x": 800, "team_loadout_y": 324, "team_loadout_row_height": 126,
+    # Optional override for the first Teams click. None means use the live
+    # image match center; the Macro Coordinates picker can save a safer point
+    # inside the button for layouts where its lower/inner area registers more
+    # reliably.
+    "team_button_x": None, "team_button_y": None,
     "screen_middle_x": 576, "screen_middle_y": 378,
     "unit_info_reset_x": 3, "unit_info_reset_y": 3,
 }
@@ -833,6 +843,13 @@ class Api:
             cfg.update(clean)
         return {"ok": True, "saved": list(clean)}
 
+    def clear_macro_coord(self, prefix: str) -> dict:
+        """Clear an optional coordinate override back to automatic behavior."""
+        if prefix != "team_button":
+            return {"ok": False, "reason": "not_optional"}
+        cfg.update({"team_button_x": None, "team_button_y": None})
+        return {"ok": True, "cleared": ["team_button_x", "team_button_y"]}
+
     def reset_macro_coords(self) -> dict:
         cfg.update(dict(MACRO_COORD_DEFAULTS))
         return {"ok": True, "coords": dict(MACRO_COORD_DEFAULTS)}
@@ -1151,6 +1168,8 @@ class Api:
             "enabled": False,
             "play_mode": "solo",
             "summon_banner": "standard",
+            "mythic_only": False,
+            "mythic_max_rerolls": BOUNTY_MYTHIC_DEFAULT_REROLLS,
             "remaining": BOUNTY_DAILY_TOTAL,
             "total": BOUNTY_DAILY_TOTAL,
             "last_reset_date": _current_challenge_reset_period(),
@@ -1203,6 +1222,9 @@ class Api:
             "enabled": bool(settings.get("enabled")),
             "play_mode": settings.get("play_mode") or "solo",
             "summon_banner": settings.get("summon_banner") or "standard",
+            "mythic_only": bool(settings.get("mythic_only")),
+            "mythic_max_rerolls": int(settings.get(
+                "mythic_max_rerolls", BOUNTY_MYTHIC_DEFAULT_REROLLS)),
             "maps": settings.get("maps") or {},
         }})
 
@@ -1213,6 +1235,18 @@ class Api:
             merged["play_mode"] = "solo"
         if merged.get("summon_banner") not in ("standard", "villain"):
             merged["summon_banner"] = "standard"
+        merged["mythic_only"] = bool(merged.get("mythic_only"))
+        try:
+            merged["mythic_max_rerolls"] = max(
+                BOUNTY_MYTHIC_MIN_REROLLS,
+                min(
+                    BOUNTY_MYTHIC_MAX_REROLLS,
+                    int(merged.get(
+                        "mythic_max_rerolls", BOUNTY_MYTHIC_DEFAULT_REROLLS)),
+                ),
+            )
+        except (TypeError, ValueError):
+            merged["mythic_max_rerolls"] = BOUNTY_MYTHIC_DEFAULT_REROLLS
         try:
             total = max(1, min(99, int(merged.get("total") or BOUNTY_DAILY_TOTAL)))
         except (TypeError, ValueError):
@@ -1282,6 +1316,24 @@ class Api:
             return {"ok": False, "reason": "bad_banner"}
         settings = self.get_bounty_settings()
         settings["summon_banner"] = banner
+        self._save_bounty_settings(settings)
+        return {"ok": True}
+
+    def set_bounty_mythic_only(self, enabled: bool) -> dict:
+        settings = self.get_bounty_settings()
+        settings["mythic_only"] = bool(enabled)
+        self._save_bounty_settings(settings)
+        return {"ok": True}
+
+    def set_bounty_mythic_max_rerolls(self, value) -> dict:
+        try:
+            limit = int(value)
+        except (TypeError, ValueError):
+            return {"ok": False, "reason": "bad_mythic_max_rerolls"}
+        if not (BOUNTY_MYTHIC_MIN_REROLLS <= limit <= BOUNTY_MYTHIC_MAX_REROLLS):
+            return {"ok": False, "reason": "bad_mythic_max_rerolls"}
+        settings = self.get_bounty_settings()
+        settings["mythic_max_rerolls"] = limit
         self._save_bounty_settings(settings)
         return {"ok": True}
 
@@ -2465,14 +2517,17 @@ class Api:
             "enabled": data.get("webhook_enabled", False),
             "silent": data.get("webhook_silent", False),
             "mention_id": data.get("webhook_mention_id", ""),
+            "progress": data.get("webhook_progress_enabled", False),
         }
 
-    def save_webhook_settings(self, url: str, enabled: bool, silent: bool, mention_id: str = "") -> dict:
+    def save_webhook_settings(self, url: str, enabled: bool, silent: bool, mention_id: str = "",
+                              progress: bool = False) -> dict:
         cfg.update({
             "webhook_url": url or "",
             "webhook_enabled": bool(enabled),
             "webhook_silent": bool(silent),
             "webhook_mention_id": (mention_id or "").strip(),
+            "webhook_progress_enabled": bool(progress),
         })
         return {"ok": True}
 

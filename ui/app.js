@@ -797,16 +797,22 @@ function filterSettings(query) {
       contentCopy.querySelectorAll('.setting-row').forEach(row => row.remove());
       const panelContentText = (contentCopy.textContent || '').toLowerCase();
       const panelContentHit = !!q && panelContentText.includes(q);
+      // A search for a panel's own title (for example "Macro Coordinates")
+      // should show the panel's controls, not leave only its header and
+      // description visible. The old code kept the panel because the header
+      // matched, but had already hidden every row because none of the row
+      // labels matched the same query.
+      const headerText = (panel.querySelector('.rp-panel-head')?.textContent || '').toLowerCase();
+      const headerHit = !!q && headerText.includes(q);
       panel.querySelectorAll('.setting-row').forEach(row => {
         const text = (row.textContent || '').toLowerCase();
-        const hit = !q || panelContentHit || text.includes(q);
+        const hit = !q || headerHit || panelContentHit || text.includes(q);
         row.classList.toggle('search-hidden', !hit);
-        row.classList.toggle('search-hit', hit && !!q && !panelContentHit);
+        row.classList.toggle('search-hit', hit && !!q && !headerHit && !panelContentHit);
         if (hit) panelHasHit = true;
       });
       // Also check the panel header text (e.g. "Webhook", "General")
-      const headerText = (panel.querySelector('.rp-panel-head')?.textContent || '').toLowerCase();
-      if (q && headerText.includes(q)) panelHasHit = true;
+      if (headerHit) panelHasHit = true;
       if (panelContentHit) panelHasHit = true;
       panel.classList.toggle('search-hidden', !panelHasHit && !!q);
       if (panelHasHit) catHasHit = true;
@@ -2000,6 +2006,7 @@ async function loadWebhookUI() {
     document.getElementById('webhook-mention-id').value = wh.mention_id || '';
     document.getElementById('toggle-webhook-enabled').classList.toggle('on', !!wh.enabled);
     document.getElementById('toggle-webhook-silent').classList.toggle('on', !!wh.silent);
+    document.getElementById('toggle-webhook-progress').classList.toggle('on', !!wh.progress);
     updateWebhookValidity(wh.url || '');
   } catch (e) {}
 }
@@ -2110,8 +2117,9 @@ async function saveWebhookSettings(silentSave) {
   const mentionId = document.getElementById('webhook-mention-id').value.trim();
   const enabled = document.getElementById('toggle-webhook-enabled').classList.contains('on');
   const silent = document.getElementById('toggle-webhook-silent').classList.contains('on');
+  const progress = document.getElementById('toggle-webhook-progress').classList.contains('on');
   try {
-    await pywebview.api.save_webhook_settings(url, enabled, silent, mentionId);
+    await pywebview.api.save_webhook_settings(url, enabled, silent, mentionId, progress);
     updateWebhookValidity(url);
     if (!silentSave) setWebhookStatus('Saved.', 'var(--teal)');
   } catch (e) {
@@ -3293,6 +3301,10 @@ function renderBountyScreen() {
   }
   document.getElementById('toggle-bounty-enabled')?.classList.toggle(
     'on', !!(s && s.enabled && s.setup_ready));
+  document.getElementById('toggle-bounty-mythic')?.classList.toggle(
+    'on', !!(s && s.mythic_only));
+  const mythicMax = document.getElementById('bounty-mythic-max-rerolls');
+  if (mythicMax && s) mythicMax.value = s.mythic_max_rerolls || 20;
   const playMode = (s && s.play_mode) || 'solo';
   document.getElementById('bounty-mode-solo')?.classList.toggle('active', playMode === 'solo');
   document.getElementById('bounty-mode-matchmaking')?.classList.toggle('active', playMode === 'matchmaking');
@@ -3339,6 +3351,18 @@ async function toggleBountyEnabled(btn) {
       addLog('[Macro] Auto Bounty needs a saved Macro Operation for every Story map before it can be enabled.');
     }
   } catch (e) {}
+  await refreshBountyScreen();
+}
+
+async function toggleBountyMythic(btn) {
+  const isOn = !btn.classList.contains('on');
+  bounceToggle(btn);
+  try { await pywebview.api.set_bounty_mythic_only(isOn); } catch (e) {}
+  await refreshBountyScreen();
+}
+
+async function setBountyMythicMaxRerolls(value) {
+  try { await pywebview.api.set_bounty_mythic_max_rerolls(value); } catch (e) {}
   await refreshBountyScreen();
 }
 
@@ -4485,6 +4509,7 @@ const MACRO_COORD_KEYS = [
   'challenge_stage_3_x', 'challenge_stage_3_y',
   'expedition_difficulty_x', 'expedition_difficulty_y',
   'team_loadout_x', 'team_loadout_y', 'team_loadout_row_height',
+  'team_button_x', 'team_button_y',
   'screen_middle_x', 'screen_middle_y',
   'unit_info_reset_x', 'unit_info_reset_y',
 ];
@@ -4502,6 +4527,19 @@ async function setMacroCoord(key, value) {
   const n = parseInt(value);
   if (Number.isNaN(n)) return;
   try { await pywebview.api.set_macro_coord(key, n); } catch (e) {}
+}
+
+async function clearMacroCoord(prefix) {
+  try {
+    const result = await pywebview.api.clear_macro_coord(prefix);
+    if (result && result.ok) {
+      for (const suffix of ['_x', '_y']) {
+        const el = document.getElementById(`coord-${prefix}${suffix}`);
+        if (el) el.value = '';
+      }
+      addLog(`[Debug] ${prefix} coordinate override cleared -- using Auto.`);
+    }
+  } catch (e) {}
 }
 
 // Several coordinate keys in one atomic write (see set_macro_coords) -- the
@@ -6096,7 +6134,7 @@ const IMAGE_DESCRIPTIONS = {
   chal_select: "The Challenge mode select button.",
   challenge: "The Challenge card on the Play menu.",
   challenge_loaded: "Confirms the Challenge screen finished loading.",
-  click_anywhere_to_close: "The 'Click anywhere to close' popup (e.g. a Raid boss cutscene).",
+  click_anywhere_to_close: "The Spirit City Act 3 Raid popup. Click-text, sword, Lvl 1, and 8th Sword image variants are all fallback signals for dismissing it.",
   confirm: "The Confirm button -- e.g. confirming a Team Loadout.",
   continue_2: "The smaller second 'Continue' button in Expedition wave transitions.",
   defeat: "The Defeat result screen -- how the macro knows a run was lost.",

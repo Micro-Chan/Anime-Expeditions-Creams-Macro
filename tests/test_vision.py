@@ -1,3 +1,4 @@
+import cv2
 import numpy as np
 import pytest
 
@@ -9,7 +10,7 @@ def test_screen_to_ref_is_the_inverse_of_ref_to_screen(monkeypatch):
     """core.input_record's Record block relies on screen_to_ref undoing
     ref_to_screen exactly, so a captured screen point round-trips back to
     the same reference point it was converted from."""
-    monkeypatch.setattr(wm, "get_window_rect_screen", lambda hwnd: (100, 50, 100 + 576, 50 + 378))
+    monkeypatch.setattr(wm, "get_client_rect_screen", lambda hwnd: (100, 50, 100 + 576, 50 + 378))
 
     ref_x, ref_y = 300.0, 200.0
     screen_x, screen_y = vision.ref_to_screen(1, ref_x, ref_y)
@@ -17,6 +18,14 @@ def test_screen_to_ref_is_the_inverse_of_ref_to_screen(monkeypatch):
 
     assert round(back_x) == ref_x
     assert round(back_y) == ref_y
+
+
+def test_reference_clicks_use_client_rect_not_outer_frame(monkeypatch):
+    """A title bar must not be added to a viewport-relative match point."""
+    monkeypatch.setattr(wm, "get_window_rect_screen", lambda hwnd: (100, 200, 1284, 1036))
+    monkeypatch.setattr(wm, "get_client_rect_screen", lambda hwnd: (116, 230, 1268, 986))
+
+    assert vision.ref_to_screen(1, 438, 556) == (554, 786)
 
 
 def test_find_image_any_captures_once_for_multiple_candidates(monkeypatch):
@@ -126,4 +135,33 @@ def test_template_cache_lru_eviction():
         assert "key_overflow" in vision._template_cache
     finally:
         vision.clear_template_cache()
+
+
+def test_template_load_handles_non_ascii_asset_paths(monkeypatch, tmp_path):
+    """Reference images must load when the Windows user/path is non-ASCII.
+
+    OpenCV's filename-based reader is not reliable for Unicode Windows paths;
+    the production loader must read the bytes through Python first instead.
+    """
+    ui_dir = tmp_path / "Ярослав" / "Assets" / "ui"
+    template_dir = ui_dir / "nav_back"
+    template_dir.mkdir(parents=True)
+    image = np.full((12, 16, 3), 127, dtype=np.uint8)
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+    (template_dir / "nav_back.png").write_bytes(encoded.tobytes())
+
+    monkeypatch.setattr(
+        vision.cv2,
+        "imread",
+        lambda *_args, **_kwargs: pytest.fail("Unicode-unsafe cv2.imread was called"),
+    )
+    vision.clear_template_cache()
+    try:
+        loaded = vision.load_template_grays("nav_back", str(ui_dir))
+    finally:
+        vision.clear_template_cache()
+
+    assert len(loaded) == 1
+    assert loaded[0][0].shape == (12, 16)
 

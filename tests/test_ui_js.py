@@ -212,6 +212,64 @@ def test_remove_block_still_works_one_at_a_time(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# filterSettings: matching a panel title must not hide its controls
+# ---------------------------------------------------------------------------
+
+def test_settings_search_panel_title_keeps_all_rows_visible(tmp_path):
+    out = run_js("""
+        function classList() {
+          const names = new Set();
+          return {
+            toggle(name, on) { if (on) names.add(name); else names.delete(name); },
+            has(name) { return names.has(name); }
+          };
+        }
+        const rows = [
+          { textContent: 'Story Card fallback click', classList: classList() },
+          { textContent: 'Story Stage Rows row height', classList: classList() },
+        ];
+        const panel = {
+          classList: classList(),
+          querySelector(sel) {
+            return sel === '.rp-panel-head' ? { textContent: 'Control Macro Coordinates' } : null;
+          },
+          querySelectorAll(sel) { return sel === '.setting-row' ? rows : []; },
+          cloneNode() {
+            return {
+              textContent: '',
+              querySelector(sel) {
+                return sel === '.rp-panel-head' ? { remove() {} } : null;
+              },
+              querySelectorAll() { return []; },
+            };
+          },
+        };
+        const category = {
+          dataset: { cat: 'debug' }, style: {}, classList: classList(),
+          querySelectorAll(sel) { return sel === '.rp-panel' ? [panel] : []; },
+        };
+        const buttons = [
+          { dataset: { cat: 'all' }, classList: classList() },
+          { dataset: { cat: 'debug' }, classList: classList() },
+        ];
+        const document = {
+          querySelectorAll(sel) {
+            if (sel === '.settings-cat-btn') return buttons;
+            if (sel === '.settings-category') return [category];
+            return [];
+          },
+        };
+        eval(extract('filterSettings'));
+        filterSettings('Macro Coordinates');
+        console.log(JSON.stringify({
+          rowsHidden: rows.map(row => row.classList.has('search-hidden')),
+          panelHidden: panel.classList.has('search-hidden'),
+        }));
+    """, tmp_path)
+    assert out == {"rowsHidden": [False, False], "panelHidden": False}
+
+
+# ---------------------------------------------------------------------------
 # filterSettings: panel-owned content outside .setting-row stays searchable
 # ---------------------------------------------------------------------------
 
@@ -266,6 +324,37 @@ def test_settings_search_non_row_panel_content_keeps_controls_visible(tmp_path):
         }));
     """, tmp_path)
     assert out == {"rowsHidden": [False], "panelHidden": False}
+
+
+def test_webhook_progress_toggle_is_saved_with_other_webhook_settings(tmp_path):
+    out = run_js("""
+        const calls = [];
+        const elements = {
+          'webhook-url': { value: 'https://discord.com/api/webhooks/123/token' },
+          'webhook-mention-id': { value: '456' },
+          'toggle-webhook-enabled': { classList: { contains: () => true } },
+          'toggle-webhook-silent': { classList: { contains: () => false } },
+          'toggle-webhook-progress': { classList: { contains: () => true } },
+        };
+        const document = { getElementById: id => elements[id] };
+        const pywebview = { api: {
+          save_webhook_settings: async (...args) => calls.push(args),
+        }};
+        function updateWebhookValidity() {}
+        function setWebhookStatus() {}
+        eval(extract('saveWebhookSettings'));
+        (async () => {
+          await saveWebhookSettings(true);
+          console.log(JSON.stringify(calls));
+        })();
+    """, tmp_path)
+    assert out == [[
+        "https://discord.com/api/webhooks/123/token",
+        True,
+        False,
+        "456",
+        True,
+    ]]
 
 
 # ---------------------------------------------------------------------------

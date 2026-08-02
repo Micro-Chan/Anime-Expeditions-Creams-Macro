@@ -172,6 +172,9 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
             _raw_set_status(**kw)
 
         self._set_status = _tracking_set_status
+        # Used only by opt-in progress notifications to describe what a
+        # Challenge will resume after it finishes.
+        self._active_task_progress = None
         # (result: "win"|"loss", map_name, duration_str) -> persists to run
         # history / win-loss counters (see main.Api._record_match_result).
         self._record_result = record_result or (lambda *a, **kw: None)
@@ -757,6 +760,7 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
         self._coords = coords
         default_walk_paths = default_walk_paths or {}
         webhook = webhook or {}
+        self._active_task_progress = None
 
         hwnd = hwnd_getter()
         if not hwnd or not wm.is_window(hwnd):
@@ -962,6 +966,29 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
         map_name = task.get("map")
         mode = task.get("mode") or "story"
         repeat_total = max(1, int(task.get("repeat") or 1))
+        progress_task = dict(task)
+        progress_task["map"] = map_name or mode.title()
+        self._active_task_progress = {
+            "index": task_index,
+            "count": task_count,
+            "map": progress_task["map"],
+            "next_repeat": 1,
+            "repeat_total": repeat_total,
+        }
+        task_started_at = time.monotonic()
+        self._send_progress_webhook(
+            webhook,
+            progress_task,
+            f"Task {task_index}/{task_count} Started",
+            f'Starting **{progress_task["map"]}** x{repeat_total}.',
+            0x5865F2,
+            extra_fields=[
+                {"name": "Mode", "value": mode.title(), "inline": True},
+                {"name": "Repeats", "value": str(repeat_total), "inline": True},
+            ],
+            current_action=f"Task {task_index}/{task_count} -- starting",
+            next_phase=f"Enter stage, then Pre Start (repeat 1/{repeat_total})",
+        )
         # Repeats already resolved (win/loss handled by _handle_match_result)
         # across EVERY recovery attempt so far -- carried across the outer
         # loop below so a mid-task recovery resumes the count instead of
@@ -1045,6 +1072,8 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
             # just fully re-run, confirmed from a real report: Walk Path
             # silently skipped resuming a task after a Challenge interleave).
             fresh_entry = True
+            for repeat_index in range(1, repeat_total + 1):
+                self._active_task_progress["next_repeat"] = repeat_index
             for repeat_index in range(repeats_done + 1, repeat_total + 1):
                 self._set_status(current_repeat=f"{repeat_index} / {repeat_total}")
                 battle_started = time.time()
@@ -1206,6 +1235,7 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
                     continue
 
                 if challenge_wants_in:
+                    self._active_task_progress["next_repeat"] = repeat_index + 1
                     self._log(f'[Macro] Challenge stage ready -- pausing "{map_name}" to run it '
                                f'before continuing.')
                     self._run_challenges(hwnd, stop_event, coords, default_walk_paths, webhook)
@@ -1366,6 +1396,20 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
                         break
 
             if not task_failed:
+                elapsed = self._format_duration(time.monotonic() - task_started_at)
+                self._send_progress_webhook(
+                    webhook,
+                    progress_task,
+                    f"Task {task_index}/{task_count} Finished",
+                    f'Task **{progress_task["map"]}** completed all {repeat_total} repeat(s).',
+                    0x3FBF6F,
+                    extra_fields=[
+                        {"name": "Status", "value": "Completed", "inline": True},
+                        {"name": "Elapsed", "value": elapsed, "inline": True},
+                    ],
+                    current_action=f"Task {task_index}/{task_count} -- completed",
+                    next_phase=self._next_task_progress(task_index, task_count),
+                )
                 return True  # finished every repeat cleanly
 
             self._log(f'[Macro] Task {task_index}/{task_count} hit a problem mid-run -- recovering to the lobby.')
@@ -2488,6 +2532,10 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
         # this click was early or dropped, every later action landed against
         # the wrong screen. Verify the destination's own title and retry THIS
         # click before touching any loadout row.
+        manual_team_click = self._optional_cxy("team_button")
+        if manual_team_click is not None:
+            self._log(f"[Macro] Using manual Teams click point ({manual_team_click[0]}, "
+                       f"{manual_team_click[1]}).")
         loadout_open = None
         for attempt in range(1, TEAM_LOADOUT_OPEN_RETRY_ATTEMPTS + 1):
             if self._checkpoint(stop_event):
@@ -2495,7 +2543,12 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
             if attempt > 1:
                 self._log(f'[Macro] Load Team list did not open -- retrying the Teams button '
                            f'(attempt {attempt}/{TEAM_LOADOUT_OPEN_RETRY_ATTEMPTS}).')
-            vision.click_match(self._mouse, hwnd, team_match)
+            if manual_team_click is None:
+                vision.click_match(self._mouse, hwnd, team_match)
+            else:
+                vision.click_match(self._mouse, hwnd, {
+                    "cx": manual_team_click[0], "cy": manual_team_click[1],
+                })
             self._log("[Macro] Clicked Teams -- waiting for the Load Team list.")
             try:
                 loadout_open = vision.wait_for_image(
@@ -2545,7 +2598,6 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
         if self._checkpoint(stop_event):
             return False
 
-        left, top, _, _ = wm.get_window_rect_screen(hwnd)
         row1_x, row1_y = self._cxy("team_loadout")  # Loadout 1's row (Settings > Debug > Macro Coordinates)
         row_x = row1_x + TEAM_LOADOUT_BUTTON_CENTER_X_OFFSET
         if team_num > 3:
@@ -2556,8 +2608,7 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
             # over the real scrollbar and send ordinary wheel notches
             # instead. Each notch shifts the rows by a stable 100px.
             scroll_steps = min(team_num, TEAM_LOADOUT_WHEEL_MAX_STEPS)
-            hover_x = left + TEAM_LOADOUT_SCROLLBAR_HOVER[0]
-            hover_y = top + TEAM_LOADOUT_SCROLLBAR_HOVER[1]
+            hover_x, hover_y = vision.ref_to_screen(hwnd, *TEAM_LOADOUT_SCROLLBAR_HOVER)
             self._mouse.move_to(hover_x, hover_y)
             time.sleep(TEAM_LOADOUT_SCROLL_HOVER_SETTLE)
             self._mouse.nudge()
@@ -2776,6 +2827,46 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
                 self._log(f'[Macro] "{title}" webhook send failed: {result.get("reason")}')
         except Exception as exc:
             self._log(f'[Macro] "{title}" webhook send failed: {exc}')
+
+    @staticmethod
+    def _next_task_progress(task_index: int, task_count: int) -> str:
+        if task_index < task_count:
+            next_task = f"Task {task_index + 1}/{task_count}"
+        else:
+            next_task = f"Task 1/{task_count} on the next queue pass"
+        return f"Auto resource checks, then {next_task}"
+
+    def _next_challenge_progress(self) -> str:
+        active = getattr(self, "_active_task_progress", None)
+        next_step = "Check for another ready Challenge stage"
+        if not active:
+            return f"{next_step}, then Task queue"
+        repeat = active.get("next_repeat")
+        total = active.get("repeat_total")
+        repeat_text = f" (repeat {repeat}/{total})" if repeat and total else ""
+        return f"{next_step}, then Resume Task {active['index']}/{active['count']}{repeat_text}"
+
+    def _send_progress_webhook(self, webhook: dict, task: dict, title: str, description: str,
+                               color: int, extra_fields: list = None,
+                               current_action: str = None, next_phase: str = None) -> None:
+        """Send an optional task/challenge lifecycle notification.
+
+        Progress is deliberately separate from the existing event alerts:
+        users who only want result/failure messages keep the old behavior,
+        while the opt-in setting can report queue movement as it happens.
+        """
+        if not (webhook or {}).get("enabled") or not (webhook or {}).get("progress"):
+            return
+        fields = []
+        if current_action:
+            fields.append({"name": "Current", "value": current_action, "inline": False})
+        if next_phase:
+            fields.append({"name": "Next", "value": next_phase, "inline": False})
+        if extra_fields:
+            fields.extend(extra_fields)
+        self._send_event_webhook(
+            webhook, task, title, description, color,
+            extra_fields=fields or None)
 
     def _attempt_rejoin(self, hwnd, stop_event: threading.Event) -> bool:
         """Serialize Roblox deep-link rejoin attempts.
@@ -3318,6 +3409,17 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
         self._log('[Macro] No Start Game button found -- Auto Vote Start is likely on, letting it '
                    "auto-start the round instead of disabling it.")
         return True
+
+    def _optional_cxy(self, prefix: str):
+        """Return an optional coordinate override, or ``None`` for Auto."""
+        x = self._coords.get(f"{prefix}_x")
+        y = self._coords.get(f"{prefix}_y")
+        if x in (None, "") or y in (None, ""):
+            return None
+        try:
+            return int(x), int(y)
+        except (TypeError, ValueError):
+            return None
 
     def _cxy(self, prefix: str) -> tuple:
         """(x, y) for a Macro Coordinates point -- self._coords holds the
