@@ -132,14 +132,14 @@ def _windows_version_file():
     mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),
   kids=[
     StringFileInfo([StringTable('040904B0', [
-      StringStruct('CompanyName', "Cream's Macro"),
+      StringStruct('CompanyName', "Schutz's Macro"),
       StringStruct('FileDescription', "Anime Expeditions Macro"),
       StringStruct('FileVersion', "{ver}"),
       StringStruct('InternalName', "{EXE_NAME}"),
       StringStruct('OriginalFilename', "{EXE_NAME}.exe"),
-      StringStruct('ProductName', "Cream's Macro - Anime Expeditions"),
+      StringStruct('ProductName', "Schutz's Macro - Anime Expeditions"),
       StringStruct('ProductVersion', "{ver}"),
-      StringStruct('LegalCopyright', "Cream's Macro"),
+      StringStruct('LegalCopyright', "Schutz's Macro"),
     ])]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])
   ]

@@ -68,7 +68,7 @@ def decode_template_code(input_str: str) -> dict:
         try:
             req = urllib.request.Request(
                 raw_str,
-                headers={"User-Agent": "CreamsMacro-TemplateImporter/1.0"},
+                headers={"User-Agent": "SchutzsMacro-TemplateImporter/1.0"},
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 content = resp.read(MAX_URL_SIZE + 1)
@@ -127,7 +127,7 @@ def count_template_blocks(blocks) -> int:
     if isinstance(blocks, list):
         return _count_block_list(blocks)
     if isinstance(blocks, dict):
-        # Known block phases in Creams Macro templates
+        # Known block phases in Schutz's Macro templates
         prestart = blocks.get("prestart") if isinstance(blocks.get("prestart"), list) else (blocks.get("before") if isinstance(blocks.get("before"), list) else [])
         battle = blocks.get("battle") if isinstance(blocks.get("battle"), list) else []
         legacy = (blocks.get("during") if isinstance(blocks.get("during"), list) else []) + (blocks.get("after") if isinstance(blocks.get("after"), list) else [])

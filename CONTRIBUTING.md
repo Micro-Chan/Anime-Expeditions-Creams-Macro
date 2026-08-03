@@ -1,6 +1,6 @@
 # Contributing Guidelines
 
-Guidelines for contributing code, documentation, and assets to Creams Macro.
+Guidelines for contributing code, documentation, and assets to Schutz's Macro.
 
 ---
 
@@ -16,7 +16,7 @@ Install prerequisites before starting development:
 
 1. Clone repository:
    ```bash
-   git clone https://github.com/Cweamy/Anime-Expeditions-Creams-Macro.git
+   git clone https://github.com/Micro-Chan/Anime-Expeditions-Creams-Macro.git
    cd Anime-Expeditions-Creams-Macro
    ```
 

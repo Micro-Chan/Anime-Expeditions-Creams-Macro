@@ -43,7 +43,7 @@ import requests
 
 from . import constants
 
-GITHUB_REPO = "Cweamy/Anime-Expeditions-Creams-Macro"
+GITHUB_REPO = "Micro-Chan/Anime-Expeditions-Creams-Macro"
 RELEASES_LATEST_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPO}/releases/latest"
 # The packaged release zip (exe + the loose Assets/ folder side by side,
@@ -868,7 +868,7 @@ def stage_exe_update(new_exe_path: str) -> str:
 setlocal enabledelayedexpansion
 set LOG="{log_path}"
 echo ---- %date% %time% ---- > %LOG%
-echo Updating Cream's Macro -- please wait, this window closes itself...
+echo Updating Schutz's Macro -- please wait, this window closes itself...
 echo [1/5] Waiting for the app to close itself (image: {exe_name})... >> %LOG%
 rem taskkill is the SAFETY NET for a shutdown that hangs, not the way the app
 rem normally closes -- so wait for the app to go on its own FIRST and only
