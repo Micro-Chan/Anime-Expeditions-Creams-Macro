@@ -552,12 +552,18 @@ TEAM_LOADOUT_WHEEL_INTERVAL = 0.15
 TEAM_LOADOUT_SCROLL_SETTLE = 0.5
 
 # Wait for Wave (see _run_wait_wave_tick) -- the "<current> / <max> wave"
-# HUD badge, in the docked game window's own client coordinates.
-WAVE_REGION = (467, 21, 104, 61)
-# OCR here is several real Tesseract subprocess spawns (see core.wave/
-# core.ocr's multi-mask sweep) -- checked on this cadence, not every single
-# Battle-tick poll, so a long wait for a distant wave doesn't spend most of
-# its time re-running OCR against a number that hasn't changed yet.
+# HUD badge, in the docked game window's own client coordinates. Widened
+# left of the old OCR-era crop (467, 21, 104, 61): core.wave.read_wave now
+# anchors off a "wave_icon" (the word "wave") template match and searches
+# WAVE_DIGIT_SEARCH_WIDTH px to its left for the digits, so the captured
+# region has to comfortably contain both the word AND that whole search
+# band, not just a tight box around the visible text. Verify against a real
+# capture (Settings > Debug > "Wave Monitor" shows the exact crop) if the
+# badge ever renders somewhere else on a particular setup.
+WAVE_REGION = (427, 21, 144, 61)
+# Checked on this cadence, not every single Battle-tick poll, so a long wait
+# for a distant wave doesn't spend most of its time re-matching a badge that
+# hasn't changed yet.
 WAIT_WAVE_POLL_INTERVAL = 2.0
 # New Infinite tasks default to a bounded run instead of silently running
 # forever. The Task builder exposes this value per task.

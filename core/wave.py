@@ -1,179 +1,168 @@
 """Reads the "Wait for Wave" badge (Battle > Wait for Wave block): a small
-"<current> / <max> wave" readout (e.g. "0 / 15 wave") in the top HUD.
+"<icon> <current> / <max> wave" readout (e.g. "0 / 15 wave") in the top HUD.
 
-The icon and "wave" label share the crop with the two numbers -- a
-digit+slash-only Tesseract whitelist drops the letters instead of needing
-to isolate the numbers by color/position first (see core.game_stats for
-that alternative approach, used there because its value/label text is the
-same color and needs isolating; here the whitelist alone is enough).
+Template matching, not OCR: the badge is a fixed-font, fixed-scale game UI
+element, not arbitrary text, so this correlates known reference crops
+(Assets/ui/wave_0 .. wave_9, wave_slash, wave_icon) against the live capture
+instead of running a general-purpose text classifier at it. That sidesteps
+the whole class of misread this module used to fight (O/0, S/5 confusion, a
+sharpened "5" turning into "8", "0/15" fusing into "015", the HUD icon
+hallucinated as an extra leading digit) -- a digit template simply can't be
+confused for a different digit's shape the way an OCR engine's classifier
+can.
 
-Deliberately does NOT use core.ocr.ocr_best's usual "stop at the first
-mask/psm combo that matches the valid pattern" shortcut: that shortcut
-assumes a clean pattern match is itself good evidence of a correct read,
-which holds for e.g. a quantity ("^[\\d,]+$") but not here -- almost any
-mask produces SOME "<digits> / <digits>"-shaped text regardless of
-whether the digits themselves are right, so the first candidate tried can
-"win" on a misread (confirmed against a real capture: a clearly legible
-"0 / 15" mask lost to an earlier, uglier mask's "0 / 18"). Instead this
-runs the full candidate sweep and majority-votes across every reading
-that at least parsed cleanly -- a wrong digit in one mask gets outvoted
-by the other masks agreeing on the right one, rather than deciding on
-whichever came first.
+wave_icon is actually a crop of the WORD "wave", not the icon graphic --
+named that historically, kept for compatibility with the asset folder
+already on disk. It's the anchor because it's the one element in the badge
+whose glyph is visually unique on screen (the icon graphic itself recurs
+elsewhere in the HUD and would false-positive-match there). The digits and
+slash are searched in a window measured LEFT of wave_icon's match center,
+not a fixed absolute box, so this keeps working even if the badge's overall
+on-screen position drifts a little between setups -- only its position
+RELATIVE to the word "wave" needs to stay constant.
 """
-import re
-from collections import Counter
-
 import cv2
+import numpy as np
 
-from core.ocr import get_pytesseract, candidate_masks, ocr_mask
-from core import ocr_windows
+from . import vision
 
-_WAVE_PATTERN = re.compile(r"^\d{1,4}\s?/\s?\d{1,4}$")
-_INFINITE_WAVE_PATTERN = re.compile(
-    r"(\d{1,4})\s*/\s*(?:∞|inf(?:inite|inity)?)",
-    re.IGNORECASE,
-)
-_CURRENT_ONLY_WAVE_PATTERN = re.compile(
-    r"\b([0-9OS]{1,4})\s+wave\b",
-    re.IGNORECASE,
-)
-_WHITELIST = "0123456789/"
-# psm 8 ("single word") never once produced a clean "<digits> / <digits>"
-# match in testing -- it fuses the two numbers together without the "/"
-# every time ("0/15" -> "015") -- so it's dropped rather than spending a
-# third of this sweep's subprocess calls on a mode that's never actually
-# contributed a vote.
-_PSM_MODES = (7, 11)
-# candidate_masks' default sharpen_amount (1.5, tuned for the reward/stat
-# text elsewhere in this codebase) over-sharpens THIS badge's font at this
-# size -- confirmed against a real capture, it turns "5" into "8" on most
-# mask/psm combos ("0 / 15" -> "0 / 18"). Lower/no sharpening reads it
-# correctly instead, so every level gets tried and voted across rather
-# than trusting one fixed amount.
-_SHARPEN_LEVELS = (0, 0.5, 1.5)
+# How far left of wave_icon's center (in pixels) to search for the digits --
+# generous on purpose: empty space just never matches a digit template, so
+# erring wide is free, while erring narrow silently clips leading digits of
+# a large wave count.
+WAVE_DIGIT_SEARCH_WIDTH = 100
+# Half-height of that search band, i.e. the digits are assumed to sit within
+# +-this many pixels of wave_icon's own vertical center.
+WAVE_DIGIT_SEARCH_HALF_HEIGHT = 5
+# Two candidate hits (any characters, not just the same digit -- see
+# _dedupe_hits) whose centers are this close together are the same glyph
+# read by two different templates; only the higher-scoring one survives.
+WAVE_DEDUP_DISTANCE_PX = 2
 
 
 def read_wave(region_bgr):
-    """Returns (current, max) ints, or (None, None) if nothing in the OCR
-    sweep produced a clean "<digits> / <digits>" reading at all. Votes
-    across every mask/psm/sharpen-level combination instead of stopping at
-    the first pattern match (core.ocr.ocr_best's usual shortcut) -- that
-    shortcut assumes a clean pattern match is itself good evidence of a
-    correct read, which doesn't hold here: almost any mask produces SOME
-    "<digits> / <digits>"-shaped text regardless of whether the digits
-    themselves are right, so the first candidate tried can "win" on a
-    misread. A wrong digit from one combination gets outvoted by the
-    others agreeing on the right one instead.
-    """
-    # Windows OCR when available (no Tesseract install needed), else
-    # Tesseract. Windows OCR has no psm modes, so that loop collapses to a
-    # single pass per mask there -- verified to match Tesseract's readings
-    # on every test frame at ~16x the speed.
-    use_windows = ocr_windows.is_available()
-    pytesseract = None if use_windows else get_pytesseract()
-    psm_modes = (7,) if use_windows else _PSM_MODES
-    config_base = f"--psm 7 -c tessedit_char_whitelist={_WHITELIST}"
-    votes = Counter()
-
-    def add_vote(text, weight=1):
-        # Windows OCR reads the vertical bar as '|' or letter 'l' about as
-        # often as '/'; normalize before matching.
-        text = re.sub(r"\s+", " ", text.replace("|", "/").replace("l", "/"))
-        # Infinite mode does not render a slash or maximum at all; its HUD is
-        # simply "<current> wave" (confirmed live as "6 wave"). Requiring the
-        # word "wave" keeps an unrelated lone HUD number from being accepted.
-        if "/" not in text:
-            if "-" in text:
-                # Stylized 40 has been observed as "1-10 wave". Treat the
-                # inserted dash as corruption and let another preprocessing
-                # vote read it, rather than silently collapsing it to 10.
-                return
-            current_only = _CURRENT_ONLY_WAVE_PATTERN.search(text)
-            if current_only:
-                # The live two-digit "25" render is commonly returned as
-                # "2S wave". Correct only the tightly bounded numeric token;
-                # never rewrite arbitrary OCR text.
-                raw_token = current_only.group(1)
-                # A lone OCR "O wave" is ambiguous (the icon/outline is
-                # often hallucinated as O). Require at least one real digit;
-                # "2S wave" remains valid and normalizes to 25.
-                if not any(char.isdigit() for char in raw_token):
-                    return
-                token = raw_token.upper().translate(
-                    str.maketrans({"O": "0", "S": "5"})
-                )
-                votes[(int(token), None)] += weight
-            return
-        infinite = _INFINITE_WAVE_PATTERN.search(text)
-        if infinite:
-            votes[(int(infinite.group(1)), "∞")] += weight
-            return
-        nums = re.findall(r"\d+", text)
-        if not (_WAVE_PATTERN.match(text) or (len(nums) == 2 and "/" in text)):
-            return
-        if len(nums) != 2:
-            return
-        current, maximum = int(nums[0]), int(nums[1])
-        # The blue wave icon sits immediately before the current number. On
-        # a noisy mask it can look like an extra leading digit (reported:
-        # 4/15 -> 24/15). A finite stage cannot be beyond its own maximum.
-        if maximum <= 0 or current > maximum:
-            return
-        votes[(current, maximum)] += weight
-
-    if use_windows:
-        # Windows OCR preserves this tiny outlined font much better in color
-        # than after binarization. Across 160 live captures spanning several
-        # wave transitions, a 3x Lanczos color pass read 19/20 sampled frames
-        # versus 11/20 for the existing mask sweep. Give that clean pass the
-        # deciding weight, while keeping every mask below as fallback.
-        color_3x = cv2.resize(region_bgr, None, fx=3, fy=3, interpolation=cv2.INTER_LANCZOS4)
-        color_text = ocr_windows.ocr_image(color_3x)
-        add_vote(color_text, weight=3)
-        # Current-only two-digit counters can lose either all digits (wave
-        # 24) or just the leading digit (52 -> 2) in the full crop. A tighter
-        # high-resolution pass consistently retained the complete token, so
-        # run it every time and let finite slash/max votes retain structural
-        # priority at selection below.
-        badge_top = region_bgr[:28, :90]
-        badge_10x = cv2.resize(
-            badge_top, None, fx=10, fy=10, interpolation=cv2.INTER_LANCZOS4
-        )
-        add_vote(ocr_windows.ocr_image(badge_10x), weight=4)
-
-    for sharpen in _SHARPEN_LEVELS:
-        for mask in candidate_masks(region_bgr, sharpen_amount=sharpen):
-            for psm in psm_modes:
-                config = re.sub(r"--psm \d+", f"--psm {psm}", config_base)
-                # Current-only infinite counters need the word "wave" as
-                # structural proof. ocr_mask applies the numeric whitelist
-                # after Windows OCR and used to erase that proof even when
-                # the engine had correctly read "25 wave" or "40 wave".
-                text = (
-                    ocr_windows.ocr_image(mask)
-                    if use_windows
-                    else ocr_mask(pytesseract, mask, config, whitelist=_WHITELIST)
-                )
-                add_vote(text)
-    if not votes:
+    """Returns (current, maximum) ints, maximum None for an Infinite-mode
+    "<current> wave" badge (no slash), or (None, None) if wave_icon couldn't
+    be found at all or nothing parsed into a sane reading."""
+    if region_bgr is None or getattr(region_bgr, "size", 0) == 0:
         return None, None
-    # A recognized finite slash/max counter is stronger structural evidence
-    # than the current-only fallback. This prevents a tight crop that lost
-    # the left half of "10 / 15 wave" from turning its trailing "15 wave"
-    # into an unlimited-wave reading.
-    finite_votes = Counter({
-        pair: count
-        for pair, count in votes.items()
-        if isinstance(pair[1], int)
-    })
-    selected = finite_votes or votes
-    (current, maximum), _count = selected.most_common(1)[0]
+    gray = cv2.cvtColor(region_bgr, cv2.COLOR_BGR2GRAY)
+
+    icon = _find_icon(gray)
+    if icon is None:
+        return None, None
+
+    crop = _digit_search_crop(gray, icon["cx"], icon["cy"])
+    if crop is None:
+        return None, None
+
+    hits = []
+    for digit in range(10):
+        name = f"wave_{digit}"
+        hits.extend(_find_char_hits(crop, name, str(digit)))
+    hits.extend(_find_char_hits(crop, "wave_slash", "/"))
+    if not hits:
+        return None, None
+
+    kept = _dedupe_hits(hits)
+    kept.sort(key=lambda hit: hit["cx"])
+
+    slash_at = next((i for i, hit in enumerate(kept) if hit["char"] == "/"), None)
+    if slash_at is None:
+        # No slash at all -- Infinite mode's plain "<current> wave" badge.
+        current = _parse_digits("".join(hit["char"] for hit in kept))
+        return (current, None) if current is not None else (None, None)
+
+    current = _parse_digits("".join(hit["char"] for hit in kept[:slash_at]))
+    maximum = _parse_digits("".join(hit["char"] for hit in kept[slash_at + 1:]))
+    if current is None or maximum is None:
+        return None, None
+    # A finite stage cannot be beyond its own maximum -- same sanity guard
+    # the old OCR-based reader used, kept here as cheap insurance even
+    # though template matching shouldn't produce the leading-digit
+    # hallucination that originally motivated it.
+    if maximum <= 0 or current > maximum:
+        return None, None
     return current, maximum
+
+
+def _find_icon(gray: np.ndarray) -> dict:
+    """wave_icon's match (see the module docstring for why it's the anchor
+    instead of the icon graphic), or None if it isn't on screen / has no
+    reference image saved yet."""
+    threshold = vision._effective_threshold("wave_icon", vision.DEFAULT_THRESHOLD)
+    try:
+        return vision.find_in_gray_multiscale(gray, "wave_icon", vision.UI_ASSETS_DIR, threshold)
+    except vision.TemplateNotFound:
+        return None
+
+
+def _digit_search_crop(gray: np.ndarray, icon_cx: int, icon_cy: int):
+    """The sub-image to search for digits/slash in: WAVE_DIGIT_SEARCH_WIDTH
+    px immediately left of the icon's center, WAVE_DIGIT_SEARCH_HALF_HEIGHT
+    px above/below it -- clamped to the captured region's own bounds so an
+    icon match near the left/top/bottom edge doesn't wrap or index
+    negative. None if the clamped box is empty."""
+    h, w = gray.shape[:2]
+    x0 = max(0, icon_cx - WAVE_DIGIT_SEARCH_WIDTH)
+    x1 = max(x0, min(w, icon_cx))
+    y0 = max(0, icon_cy - WAVE_DIGIT_SEARCH_HALF_HEIGHT)
+    y1 = min(h, icon_cy + WAVE_DIGIT_SEARCH_HALF_HEIGHT)
+    crop = gray[y0:y1, x0:x1]
+    return crop if crop.size > 0 else None
+
+
+def _find_char_hits(haystack_gray: np.ndarray, name: str, char: str) -> list:
+    """Every location ANY of `name`'s reference variants match at/above its
+    (per-name-tunable, see Settings > General > Image Manager) threshold,
+    tagged with the character it represents. Deliberately NOT deduplicated
+    here -- unlike vision.find_all_in_gray's single-name suppression, two
+    DIFFERENT characters' templates can both score above threshold at
+    nearly the same position (a font that's visually close between two
+    digits), so suppression has to run across every character together
+    (see _dedupe_hits) rather than per name."""
+    hits = []
+    hh, hw = haystack_gray.shape[:2]
+    try:
+        templates = vision.load_template_grays(name, vision.UI_ASSETS_DIR)
+    except vision.TemplateNotFound:
+        return hits
+    threshold = vision._effective_threshold(name, vision.DEFAULT_THRESHOLD)
+    for template_gray, mask in templates:
+        th, tw = template_gray.shape[:2]
+        if th > hh or tw > hw:
+            continue
+        if mask is not None:
+            result = cv2.matchTemplate(haystack_gray, template_gray, cv2.TM_CCORR_NORMED, mask=mask)
+        else:
+            result = cv2.matchTemplate(haystack_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+        result[~np.isfinite(result)] = -1
+        ys, xs = np.where(result >= threshold)
+        for y, x in zip(ys.tolist(), xs.tolist()):
+            hits.append({"char": char, "cx": x + tw // 2, "score": float(result[y, x])})
+    return hits
+
+
+def _dedupe_hits(hits: list) -> list:
+    """Highest-score-first greedy non-max suppression across EVERY
+    digit/slash candidate together, not per-character (see _find_char_hits)
+    -- keeps the best-scoring interpretation of each on-screen glyph
+    position and drops the rest."""
+    ordered = sorted(hits, key=lambda hit: hit["score"], reverse=True)
+    kept = []
+    for hit in ordered:
+        if any(abs(hit["cx"] - k["cx"]) <= WAVE_DEDUP_DISTANCE_PX for k in kept):
+            continue
+        kept.append(hit)
+    return kept
+
+
+def _parse_digits(digits: str):
+    return int(digits) if digits.isdigit() else None
 
 
 def save_region_preview(region_bgr, path: str) -> None:
     """Saves exactly what read_wave would see -- no annotations -- so a bad
     calibration (wrong region entirely) is visible at a glance, same
     convention as core.game_stats.save_region_preview."""
-    import cv2
     cv2.imwrite(path, region_bgr)

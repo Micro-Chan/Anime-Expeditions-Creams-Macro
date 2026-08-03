@@ -7,101 +7,170 @@ from core import runner_blocks
 from core import wave
 from core.runner import MacroRunner
 
-
-def test_impossible_current_wave_above_maximum_is_rejected(monkeypatch):
-    readings = iter(["24 / 15"] * 9)
-
-    monkeypatch.setattr(wave.ocr_windows, "is_available", lambda: True)
-    monkeypatch.setattr(wave.ocr_windows, "ocr_image", lambda _image: "24 / 15")
-    monkeypatch.setattr(
-        wave,
-        "candidate_masks",
-        lambda _image, sharpen_amount: [np.zeros((10, 10), dtype=np.uint8)] * 3,
-    )
-    monkeypatch.setattr(wave, "ocr_mask", lambda *_args, **_kwargs: next(readings))
-
-    assert wave.read_wave(np.zeros((61, 104, 3), dtype=np.uint8)) == (None, None)
+# The new (widened) WAVE_REGION's dimensions -- real-shaped zero arrays so
+# core.wave's real crop/clamp logic runs against genuine array bounds
+# instead of a stand-in shape that happens to always fit.
+_REGION_SHAPE = (61, 144, 3)
 
 
-def test_valid_wave_still_wins_when_impossible_votes_are_more_common(monkeypatch):
-    readings = iter(["24 / 15"] * 8 + ["4 / 15"] * 3)
-
-    monkeypatch.setattr(wave.ocr_windows, "is_available", lambda: True)
-    monkeypatch.setattr(wave.ocr_windows, "ocr_image", lambda _image: next(readings))
-    monkeypatch.setattr(
-        wave,
-        "candidate_masks",
-        lambda _image, sharpen_amount: [np.zeros((10, 10), dtype=np.uint8)] * 3,
-    )
-
-    assert wave.read_wave(np.zeros((61, 104, 3), dtype=np.uint8)) == (4, 15)
+def _mock_char_hits(hits_by_name):
+    """Stands in for wave._find_char_hits: looks up canned hits by the
+    template name being searched (wave_0..wave_9, wave_slash), same idea as
+    the old OCR-era tests feeding canned `readings` per call, just keyed by
+    name instead of call order since read_wave now searches every character
+    name once per read rather than sweeping masks/psm modes."""
+    def _find_char_hits(_haystack, name, _char):
+        return hits_by_name.get(name, [])
+    return _find_char_hits
 
 
-def test_windows_color_pass_is_preferred_over_noisy_mask_votes(monkeypatch):
-    readings = iter(["4 / 15", ""] + ["14 / 15"] * 5 + ["4 / 15"] * 4)
-
-    monkeypatch.setattr(wave.ocr_windows, "is_available", lambda: True)
-    monkeypatch.setattr(wave.ocr_windows, "ocr_image", lambda _image: next(readings))
-    monkeypatch.setattr(
-        wave,
-        "candidate_masks",
-        lambda _image, sharpen_amount: [np.zeros((10, 10), dtype=np.uint8)] * 3,
-    )
-
-    assert wave.read_wave(np.zeros((61, 104, 3), dtype=np.uint8)) == (4, 15)
+def _fixed_icon(cx=120, cy=30):
+    return lambda _gray: {"cx": cx, "cy": cy, "x": cx - 5, "y": cy - 5, "w": 10, "h": 10, "score": 0.99}
 
 
-def test_finite_20_and_30_wave_modes_and_explicit_infinite_mode(monkeypatch):
-    monkeypatch.setattr(wave.ocr_windows, "is_available", lambda: True)
-    monkeypatch.setattr(
-        wave,
-        "candidate_masks",
-        lambda _image, sharpen_amount: [np.zeros((10, 10), dtype=np.uint8)] * 3,
-    )
-    monkeypatch.setattr(wave, "ocr_mask", lambda *_args, **_kwargs: "")
-
-    for text, expected in (
-        ("14 / 20 wave", (14, 20)),
-        ("24 / 30 wave", (24, 30)),
-        ("42 / ∞ wave", (42, "∞")),
-        ("42 / infinite wave", (42, "∞")),
-        ("42 wave", (42, None)),
-    ):
-        monkeypatch.setattr(wave.ocr_windows, "ocr_image", lambda _image, value=text: value)
-        assert wave.read_wave(np.zeros((61, 104, 3), dtype=np.uint8)) == expected
+# --------------------------------------------------------------------------
+# read_wave: no icon match at all
+# --------------------------------------------------------------------------
+def test_no_icon_match_returns_none_none(monkeypatch):
+    monkeypatch.setattr(wave, "_find_icon", lambda _gray: None)
+    assert wave.read_wave(np.zeros(_REGION_SHAPE, dtype=np.uint8)) == (None, None)
 
 
-def test_current_only_fallback_recovers_missing_number_and_s_as_five(monkeypatch):
-    monkeypatch.setattr(wave.ocr_windows, "is_available", lambda: True)
-    monkeypatch.setattr(
-        wave,
-        "candidate_masks",
-        lambda _image, sharpen_amount: [np.zeros((10, 10), dtype=np.uint8)] * 3,
-    )
-    monkeypatch.setattr(wave, "ocr_mask", lambda *_args, **_kwargs: "")
-
-    readings = iter(["wave", "24 wave"] + [""] * 9)
-    monkeypatch.setattr(wave.ocr_windows, "ocr_image", lambda _image: next(readings))
-    assert wave.read_wave(np.zeros((61, 104, 3), dtype=np.uint8)) == (24, None)
-
-    monkeypatch.setattr(wave.ocr_windows, "ocr_image", lambda _image: "2S wave")
-    assert wave.read_wave(np.zeros((61, 104, 3), dtype=np.uint8)) == (25, None)
+def test_empty_region_returns_none_none():
+    assert wave.read_wave(None) == (None, None)
+    assert wave.read_wave(np.zeros((0, 0, 3), dtype=np.uint8)) == (None, None)
 
 
-def test_finite_counter_wins_over_current_only_mask_noise(monkeypatch):
-    readings = iter(["10 / 15 wave"] + ["15 wave"] * 10)
+# --------------------------------------------------------------------------
+# read_wave: reconstructing current/max from digit + slash hits
+# --------------------------------------------------------------------------
+def test_finite_wave_parses_current_and_max_from_digit_and_slash_hits(monkeypatch):
+    monkeypatch.setattr(wave, "_find_icon", _fixed_icon())
+    # "4 / 15" laid out left to right by cx.
+    monkeypatch.setattr(wave, "_find_char_hits", _mock_char_hits({
+        "wave_4": [{"char": "4", "cx": 5, "score": 0.95}],
+        "wave_slash": [{"char": "/", "cx": 15, "score": 0.95}],
+        "wave_1": [{"char": "1", "cx": 25, "score": 0.95}],
+        "wave_5": [{"char": "5", "cx": 35, "score": 0.95}],
+    }))
+    assert wave.read_wave(np.zeros(_REGION_SHAPE, dtype=np.uint8)) == (4, 15)
 
-    monkeypatch.setattr(wave.ocr_windows, "is_available", lambda: True)
-    monkeypatch.setattr(wave.ocr_windows, "ocr_image", lambda _image: next(readings))
-    monkeypatch.setattr(
-        wave,
-        "candidate_masks",
-        lambda _image, sharpen_amount: [np.zeros((10, 10), dtype=np.uint8)] * 3,
-    )
 
-    assert wave.read_wave(np.zeros((61, 104, 3), dtype=np.uint8)) == (10, 15)
+def test_current_only_infinite_mode_has_no_slash_hit(monkeypatch):
+    monkeypatch.setattr(wave, "_find_icon", _fixed_icon())
+    # "42 wave" -- no slash template ever hit, so this is Infinite mode.
+    monkeypatch.setattr(wave, "_find_char_hits", _mock_char_hits({
+        "wave_4": [{"char": "4", "cx": 5, "score": 0.95}],
+        "wave_2": [{"char": "2", "cx": 15, "score": 0.95}],
+    }))
+    assert wave.read_wave(np.zeros(_REGION_SHAPE, dtype=np.uint8)) == (42, None)
 
 
+def test_no_char_hits_at_all_returns_none_none(monkeypatch):
+    monkeypatch.setattr(wave, "_find_icon", _fixed_icon())
+    monkeypatch.setattr(wave, "_find_char_hits", _mock_char_hits({}))
+    assert wave.read_wave(np.zeros(_REGION_SHAPE, dtype=np.uint8)) == (None, None)
+
+
+def test_current_above_maximum_is_rejected(monkeypatch):
+    monkeypatch.setattr(wave, "_find_icon", _fixed_icon())
+    # "24 / 15" -- a finite stage cannot be beyond its own maximum.
+    monkeypatch.setattr(wave, "_find_char_hits", _mock_char_hits({
+        "wave_2": [{"char": "2", "cx": 5, "score": 0.95}],
+        "wave_4": [{"char": "4", "cx": 15, "score": 0.95}],
+        "wave_slash": [{"char": "/", "cx": 25, "score": 0.95}],
+        "wave_1": [{"char": "1", "cx": 35, "score": 0.95}],
+        "wave_5": [{"char": "5", "cx": 45, "score": 0.95}],
+    }))
+    assert wave.read_wave(np.zeros(_REGION_SHAPE, dtype=np.uint8)) == (None, None)
+
+
+def test_zero_maximum_is_rejected(monkeypatch):
+    monkeypatch.setattr(wave, "_find_icon", _fixed_icon())
+    # "3 / 0" -- not a real wave counter reading.
+    monkeypatch.setattr(wave, "_find_char_hits", _mock_char_hits({
+        "wave_3": [{"char": "3", "cx": 5, "score": 0.95}],
+        "wave_slash": [{"char": "/", "cx": 15, "score": 0.95}],
+        "wave_0": [{"char": "0", "cx": 25, "score": 0.95}],
+    }))
+    assert wave.read_wave(np.zeros(_REGION_SHAPE, dtype=np.uint8)) == (None, None)
+
+
+def test_multiple_slash_hits_only_split_on_the_first(monkeypatch):
+    """A stray second slash-shaped hit (e.g. noise past the real digits)
+    must not corrupt the maximum -- everything after the first slash is
+    still read as one digit string, non-digit characters make it unparsable
+    and the whole reading is rejected rather than silently truncated."""
+    monkeypatch.setattr(wave, "_find_icon", _fixed_icon())
+    monkeypatch.setattr(wave, "_find_char_hits", _mock_char_hits({
+        "wave_4": [{"char": "4", "cx": 5, "score": 0.95}],
+        "wave_slash": [
+            {"char": "/", "cx": 15, "score": 0.95},
+            {"char": "/", "cx": 35, "score": 0.90},
+        ],
+        "wave_1": [{"char": "1", "cx": 25, "score": 0.95}],
+    }))
+    assert wave.read_wave(np.zeros(_REGION_SHAPE, dtype=np.uint8)) == (None, None)
+
+
+# --------------------------------------------------------------------------
+# _dedupe_hits: cross-character non-max suppression
+# --------------------------------------------------------------------------
+def test_dedupe_hits_keeps_highest_scoring_candidate_at_same_position():
+    hits = [
+        {"char": "3", "cx": 50, "score": 0.91},
+        # Within WAVE_DEDUP_DISTANCE_PX of the "3" above -- an ambiguous
+        # font shape read as two different digits by two templates. Only
+        # the higher-scoring interpretation should survive.
+        {"char": "8", "cx": 51, "score": 0.97},
+        # Far enough away to be a genuinely different glyph -- keeps its
+        # own slot regardless of score.
+        {"char": "1", "cx": 80, "score": 0.90},
+    ]
+    kept = sorted(wave._dedupe_hits(hits), key=lambda h: h["cx"])
+    assert kept == [
+        {"char": "8", "cx": 51, "score": 0.97},
+        {"char": "1", "cx": 80, "score": 0.90},
+    ]
+
+
+def test_dedupe_hits_distance_boundary_is_inclusive():
+    hits = [
+        {"char": "1", "cx": 10, "score": 0.99},
+        {"char": "7", "cx": 12, "score": 0.80},  # exactly WAVE_DEDUP_DISTANCE_PX away
+    ]
+    assert wave._dedupe_hits(hits) == [{"char": "1", "cx": 10, "score": 0.99}]
+
+
+# --------------------------------------------------------------------------
+# _digit_search_crop: clamps to the captured region's own bounds
+# --------------------------------------------------------------------------
+def test_digit_search_crop_clamps_near_left_edge():
+    gray = np.zeros((61, 144), dtype=np.uint8)
+    # icon_cx=10: a naive cx-100 would go negative -- must clamp to x=0
+    # rather than wrapping or raising.
+    crop = wave._digit_search_crop(gray, icon_cx=10, icon_cy=30)
+    assert crop is not None
+    assert crop.shape == (10, 10)  # y: 25..35, x: 0..10
+
+
+def test_digit_search_crop_clamps_near_top_edge():
+    gray = np.zeros((61, 144), dtype=np.uint8)
+    crop = wave._digit_search_crop(gray, icon_cx=120, icon_cy=1)
+    assert crop is not None
+    assert crop.shape[0] == 6  # y0 clamps to 0, y1 = 1 + 5 = 6
+
+
+def test_digit_search_crop_none_when_icon_is_outside_the_region():
+    gray = np.zeros((61, 144), dtype=np.uint8)
+    crop = wave._digit_search_crop(gray, icon_cx=0, icon_cy=200)
+    assert crop is None
+
+
+# --------------------------------------------------------------------------
+# Wait for Wave block: unchanged behavior, mocks read_wave wholesale so
+# these don't care how the reading was actually produced.
+# --------------------------------------------------------------------------
 def test_wait_for_wave_requires_two_target_readings_before_later_blocks(monkeypatch):
     runner = MacroRunner(MagicMock(), MagicMock(), MagicMock())
     runner._battle_block_state = {}
@@ -147,7 +216,7 @@ def test_wait_for_wave_captures_the_roblox_window_not_the_screen(monkeypatch):
     )
     monkeypatch.setattr(
         "core.ocr.capture_region",
-        lambda *_args: pytest.fail("wave OCR must not capture the physical screen"),
+        lambda *_args: pytest.fail("wave read must not capture the physical screen"),
     )
     monkeypatch.setattr(runner_blocks.time, "time", lambda: 100.0)
     monkeypatch.setattr("core.wave.read_wave", lambda _image: (10, 15))
