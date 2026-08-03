@@ -46,20 +46,36 @@ WAVE_DIGIT_SEARCH_HALF_HEIGHT = 5
 WAVE_DEDUP_DISTANCE_PX = 3
 
 
-def read_wave(region_bgr):
+def read_wave(region_bgr, log=None):
     """Returns (current, maximum) ints, maximum None for an Infinite-mode
     "<current> wave" badge (no slash), or (None, None) if wave_icon couldn't
-    be found at all or nothing parsed into a sane reading."""
+    be found at all or nothing parsed into a sane reading.
+
+    `log` (optional, e.g. a runner's self._log) reports WHICH stage came up
+    empty on every failure path, not just the final parse -- a silent
+    (None, None) here used to look identical whether wave_icon never
+    matched at all, the digit search box came out empty, no digit/slash
+    template matched anything, or something matched but didn't parse into a
+    sane reading. Those are different problems (a missing/miscalibrated
+    anchor vs. a missing/miscalibrated digit template vs. a genuine
+    threshold issue) that all needed distinguishing from the caller's log
+    alone, since there's no other way to see what a failed read actually
+    saw.
+    """
     if region_bgr is None or getattr(region_bgr, "size", 0) == 0:
+        _log(log, "no capture -- the window region was empty.")
         return None, None
     gray = cv2.cvtColor(region_bgr, cv2.COLOR_BGR2GRAY)
 
     icon = _find_icon(gray)
     if icon is None:
+        _log(log, 'wave_icon (the word "wave") did not match anywhere in the captured region.')
         return None, None
 
     crop = _digit_search_crop(gray, icon["cx"], icon["cy"])
     if crop is None:
+        _log(log, f'wave_icon matched at ({icon["cx"]}, {icon["cy"]}), but the digit search box '
+                   f'computed from it fell entirely outside the captured region.')
         return None, None
 
     hits = []
@@ -68,28 +84,40 @@ def read_wave(region_bgr):
         hits.extend(_find_char_hits(crop, name, str(digit)))
     hits.extend(_find_char_hits(crop, "wave_slash", "/"))
     if not hits:
+        _log(log, f'wave_icon matched at ({icon["cx"]}, {icon["cy"]}), but no digit/slash template '
+                   f'matched anywhere in the search box to its left.')
         return None, None
 
     kept = _dedupe_hits(hits)
     kept.sort(key=lambda hit: hit["cx"])
+    raw = "".join(hit["char"] for hit in kept)
 
     slash_at = next((i for i, hit in enumerate(kept) if hit["char"] == "/"), None)
     if slash_at is None:
         # No slash at all -- Infinite mode's plain "<current> wave" badge.
-        current = _parse_digits("".join(hit["char"] for hit in kept))
-        return (current, None) if current is not None else (None, None)
+        current = _parse_digits(raw)
+        if current is None:
+            _log(log, f'detected "{raw}" but couldn\'t parse it into a valid reading.')
+            return None, None
+        return current, None
 
     current = _parse_digits("".join(hit["char"] for hit in kept[:slash_at]))
     maximum = _parse_digits("".join(hit["char"] for hit in kept[slash_at + 1:]))
-    if current is None or maximum is None:
-        return None, None
     # A finite stage cannot be beyond its own maximum -- same sanity guard
     # the old OCR-based reader used, kept here as cheap insurance even
     # though template matching shouldn't produce the leading-digit
     # hallucination that originally motivated it.
-    if maximum <= 0 or current > maximum:
+    if current is None or maximum is None or maximum <= 0 or current > maximum:
+        _log(log, f'detected "{raw}" but couldn\'t parse it into a valid current/max reading '
+                   f'-- likely a digit template on one side of the slash isn\'t matching (check its '
+                   f'threshold in Settings > General > Image Manager).')
         return None, None
     return current, maximum
+
+
+def _log(log, message: str) -> None:
+    if log is not None:
+        log(f"[Macro] Wave read: {message}")
 
 
 def _find_icon(gray: np.ndarray) -> dict:

@@ -31,9 +31,12 @@ def _fixed_icon(cx=120, cy=30):
 # --------------------------------------------------------------------------
 # read_wave: no icon match at all
 # --------------------------------------------------------------------------
-def test_no_icon_match_returns_none_none(monkeypatch):
+def test_no_icon_match_returns_none_none_and_logs_which_stage_failed(monkeypatch):
     monkeypatch.setattr(wave, "_find_icon", lambda _gray: None)
-    assert wave.read_wave(np.zeros(_REGION_SHAPE, dtype=np.uint8)) == (None, None)
+    logged = []
+    assert wave.read_wave(np.zeros(_REGION_SHAPE, dtype=np.uint8), log=logged.append) == (None, None)
+    assert len(logged) == 1
+    assert "wave_icon" in logged[0]
 
 
 def test_empty_region_returns_none_none():
@@ -66,10 +69,13 @@ def test_current_only_infinite_mode_has_no_slash_hit(monkeypatch):
     assert wave.read_wave(np.zeros(_REGION_SHAPE, dtype=np.uint8)) == (42, None)
 
 
-def test_no_char_hits_at_all_returns_none_none(monkeypatch):
+def test_no_char_hits_at_all_returns_none_none_and_logs_which_stage_failed(monkeypatch):
     monkeypatch.setattr(wave, "_find_icon", _fixed_icon())
     monkeypatch.setattr(wave, "_find_char_hits", _mock_char_hits({}))
-    assert wave.read_wave(np.zeros(_REGION_SHAPE, dtype=np.uint8)) == (None, None)
+    logged = []
+    assert wave.read_wave(np.zeros(_REGION_SHAPE, dtype=np.uint8), log=logged.append) == (None, None)
+    assert len(logged) == 1
+    assert "no digit/slash template matched" in logged[0]
 
 
 def test_current_above_maximum_is_rejected(monkeypatch):
@@ -94,6 +100,23 @@ def test_zero_maximum_is_rejected(monkeypatch):
         "wave_0": [{"char": "0", "cx": 25, "score": 0.95}],
     }))
     assert wave.read_wave(np.zeros(_REGION_SHAPE, dtype=np.uint8)) == (None, None)
+
+
+def test_missing_max_digits_logs_the_raw_detected_sequence(monkeypatch):
+    """A live-reported failure mode: a slash matches but nothing on its
+    right scores above threshold -- read_wave can't recover a max digit
+    count that was never detected, but it should report what it DID see
+    (via the optional `log` callable) instead of a bare "couldn't read"."""
+    monkeypatch.setattr(wave, "_find_icon", _fixed_icon())
+    monkeypatch.setattr(wave, "_find_char_hits", _mock_char_hits({
+        "wave_4": [{"char": "4", "cx": 5, "score": 0.95}],
+        "wave_slash": [{"char": "/", "cx": 15, "score": 0.95}],
+        # nothing scored for the max side at all
+    }))
+    logged = []
+    assert wave.read_wave(np.zeros(_REGION_SHAPE, dtype=np.uint8), log=logged.append) == (None, None)
+    assert len(logged) == 1
+    assert '"4/"' in logged[0]
 
 
 def test_multiple_slash_hits_only_split_on_the_first(monkeypatch):
@@ -199,7 +222,7 @@ def test_wait_for_wave_requires_two_target_readings_before_later_blocks(monkeypa
         "capture_window_region_bgr",
         lambda _hwnd, _region: np.zeros((61, 104, 3)),
     )
-    monkeypatch.setattr("core.wave.read_wave", lambda _image: next(readings))
+    monkeypatch.setattr("core.wave.read_wave", lambda _image, log=None: next(readings))
 
     # A plausible one-frame jump above the target is not trusted.
     assert runner._run_wait_wave_tick(123, block, 1) is False
@@ -230,7 +253,7 @@ def test_wait_for_wave_captures_the_roblox_window_not_the_screen(monkeypatch):
         lambda *_args: pytest.fail("wave read must not capture the physical screen"),
     )
     monkeypatch.setattr(runner_blocks.time, "time", lambda: 100.0)
-    monkeypatch.setattr("core.wave.read_wave", lambda _image: (10, 15))
+    monkeypatch.setattr("core.wave.read_wave", lambda _image, log=None: (10, 15))
 
     runner._run_wait_wave_tick(123, block, 1)
 
@@ -254,7 +277,7 @@ def test_wait_for_wave_supports_current_only_unlimited_counter(monkeypatch):
         "capture_window_region_bgr",
         lambda _hwnd, _region: np.zeros((61, 104, 3)),
     )
-    monkeypatch.setattr("core.wave.read_wave", lambda _image: next(readings))
+    monkeypatch.setattr("core.wave.read_wave", lambda _image, log=None: next(readings))
 
     assert runner._run_wait_wave_tick(123, block, 1) is False
     runner._battle_block_state["next_check"] = 0.0
@@ -284,7 +307,7 @@ def test_wait_for_wave_rejects_inconsistent_impossible_unlimited_reads(monkeypat
         "capture_window_region_bgr",
         lambda _hwnd, _region: np.zeros((61, 104, 3)),
     )
-    monkeypatch.setattr("core.wave.read_wave", lambda _image: next(readings))
+    monkeypatch.setattr("core.wave.read_wave", lambda _image, log=None: next(readings))
 
     # The impossible first read cannot combine with the real wave 46.
     assert runner._run_wait_wave_tick(123, block, 1) is False

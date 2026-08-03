@@ -36,7 +36,7 @@ def test_wave_limit_finishes_selected_wave_then_requires_a_confirming_read(monke
 
     monkeypatch.setattr(
         runner_module.vision, "capture_window_region_bgr", lambda *_args: object())
-    monkeypatch.setattr(runner_module.wave_module, "read_wave", lambda _image: next(readings))
+    monkeypatch.setattr(runner_module.wave_module, "read_wave", lambda _image, log=None: next(readings))
     monkeypatch.setattr(
         runner, "_leave_infinite_at_wave_limit",
         lambda _hwnd, _stop, limit: left.append(limit) or True)
@@ -56,7 +56,7 @@ def test_finite_wave_badge_cannot_trigger_infinite_exit(monkeypatch):
 
     monkeypatch.setattr(
         runner_module.vision, "capture_window_region_bgr", lambda *_args: object())
-    monkeypatch.setattr(runner_module.wave_module, "read_wave", lambda _image: (21, 30))
+    monkeypatch.setattr(runner_module.wave_module, "read_wave", lambda _image, log=None: (21, 30))
     monkeypatch.setattr(
         runner, "_leave_infinite_at_wave_limit",
         lambda *_args: left.append(True) or True)
@@ -77,7 +77,7 @@ def test_impossible_unlimited_reads_cannot_confirm_the_exit_wave(monkeypatch):
 
     monkeypatch.setattr(
         runner_module.vision, "capture_window_region_bgr", lambda *_args: object())
-    monkeypatch.setattr(runner_module.wave_module, "read_wave", lambda _image: next(readings))
+    monkeypatch.setattr(runner_module.wave_module, "read_wave", lambda _image, log=None: next(readings))
     monkeypatch.setattr(
         runner, "_leave_infinite_at_wave_limit",
         lambda _hwnd, _stop, limit: left.append(limit) or True)
@@ -100,7 +100,7 @@ def test_confirmed_later_wave_substitutes_after_target_wave_was_seen(monkeypatch
     monkeypatch.setattr(
         runner_module.vision, "capture_window_region_bgr", lambda *_args: object())
     monkeypatch.setattr(
-        runner_module.wave_module, "read_wave", lambda _image: next(readings))
+        runner_module.wave_module, "read_wave", lambda _image, log=None: next(readings))
     monkeypatch.setattr(
         runner, "_leave_infinite_at_wave_limit",
         lambda _hwnd, _stop, limit: left.append(limit) or True)
@@ -121,7 +121,7 @@ def test_later_wave_cannot_exit_without_observing_target_wave(monkeypatch):
 
     monkeypatch.setattr(
         runner_module.vision, "capture_window_region_bgr", lambda *_args: object())
-    monkeypatch.setattr(runner_module.wave_module, "read_wave", lambda _image: (55, None))
+    monkeypatch.setattr(runner_module.wave_module, "read_wave", lambda _image, log=None: (55, None))
     monkeypatch.setattr(
         runner, "_leave_infinite_at_wave_limit",
         lambda *_args: left.append(True) or True)
@@ -160,7 +160,7 @@ def test_failed_leave_reports_failure_to_match_loop(monkeypatch):
 
     monkeypatch.setattr(
         runner_module.vision, "capture_window_region_bgr", lambda *_args: object())
-    monkeypatch.setattr(runner_module.wave_module, "read_wave", lambda _image: (11, None))
+    monkeypatch.setattr(runner_module.wave_module, "read_wave", lambda _image, log=None: (11, None))
     monkeypatch.setattr(runner, "_leave_infinite_at_wave_limit", lambda *_args: False)
 
     assert runner._check_infinite_wave_limit(

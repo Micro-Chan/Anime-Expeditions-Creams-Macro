@@ -560,7 +560,7 @@ TEAM_LOADOUT_SCROLL_SETTLE = 0.5
 # band, not just a tight box around the visible text. Verify against a real
 # capture (Settings > Debug > "Wave Monitor" shows the exact crop) if the
 # badge ever renders somewhere else on a particular setup.
-WAVE_REGION = (427, 21, 144, 61)
+WAVE_REGION = (427, 21, 311, 61)
 # Checked on this cadence, not every single Battle-tick poll, so a long wait
 # for a distant wave doesn't spend most of its time re-matching a badge that
 # hasn't changed yet.

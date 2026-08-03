@@ -695,7 +695,7 @@ class BlockOps:
             image = vision.capture_window_region_bgr(hwnd, WAVE_REGION)
             if image is None or image.size == 0:
                 raise RuntimeError("Roblox window capture returned no pixels")
-            current, maximum = wave_module.read_wave(image)
+            current, maximum = wave_module.read_wave(image, log=self._log)
         except Exception as exc:
             self._log(f'{label}: OCR failed ({exc}) -- retrying in {WAIT_WAVE_POLL_INTERVAL:.0f}s.')
             state["next_check"] = time.time() + WAIT_WAVE_POLL_INTERVAL

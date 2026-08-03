@@ -1780,7 +1780,7 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
             image = vision.capture_window_region_bgr(hwnd, WAVE_REGION)
             if image is None:
                 raise RuntimeError("window capture returned no image")
-            current, maximum = wave_module.read_wave(image)
+            current, maximum = wave_module.read_wave(image, log=self._log)
         except Exception as exc:
             state.pop("confirmations", None)
             if not state.get("read_error_logged"):
