@@ -1372,11 +1372,12 @@ def test_at_checkpoint_block_type_registered(tmp_path):
         inLoopAllowed: src.includes("loop_a: [..._BATTLE_ALLOWED, 'at_checkpoint']")
             && src.includes("loop_b: [..._BATTLE_ALLOWED, 'at_checkpoint']"),
         excludedFromBattleAllowed: src.includes("t !== 'walk_path' && t !== 'at_checkpoint'"),
-        // The unchanged prestart array still ends right at 'repeat_while' --
-        // checking this exact tail (not just "absence of at_checkpoint",
+        // Checking the exact tail (not just "absence of at_checkpoint",
         // which false-positive-matches the BRANCHING_TYPES array literal
-        // elsewhere in the file) proves prestart itself was never touched.
-        notInPrestartAllowed: src.includes("'set_boolean', 'if', 'repeat_while'],"),
+        // elsewhere in the file) proves prestart itself was never given
+        // at_checkpoint specifically -- detect_reroll IS meant to be there
+        // (see its own registration test), so the tail now ends there.
+        notInPrestartAllowed: src.includes("'set_boolean', 'if', 'repeat_while', 'detect_reroll'],"),
         hasRow: src.includes("function renderAtCheckpointRow"),
         hasSingletonGuardInAdd: src.includes("countLoopBlocksOfType('at_checkpoint') > 0"),
         hasSingletonGuardInClone: src.includes("containsAtCheckpoint(loc.block)")
@@ -1391,6 +1392,33 @@ def test_at_checkpoint_block_type_registered(tmp_path):
     assert out["hasRow"] is True
     assert out["hasSingletonGuardInAdd"] is True
     assert out["hasSingletonGuardInClone"] is True
+
+
+def test_detect_reroll_block_type_registered(tmp_path):
+    body = """
+    console.log(JSON.stringify({
+        hasType: src.includes("detect_reroll:"),
+        hasMinRerollsParam: src.includes("key: 'minRerolls'"),
+        inPrestartAllowed: src.includes("'set_boolean', 'if', 'repeat_while', 'detect_reroll'],"),
+        // Not excluded from _BATTLE_ALLOWED like walk_path/at_checkpoint are,
+        // so it's available in Battle/Loop A/Loop B too -- nothing about it
+        // is Loop-only or single-pass-unsafe the way At Checkpoint is.
+        notExcludedFromBattleAllowed: !src.includes("t !== 'walk_path' && t !== 'at_checkpoint' && t !== 'detect_reroll'"),
+        hasControlsFn: src.includes("function renderDetectRerollControls"),
+        controlsUsesBoolNamePicker: src.includes("return renderBoolNamePicker(b);"),
+        dispatchesToControlsFn: src.includes("b.type === 'detect_reroll' ? renderDetectRerollControls(b)"),
+        restoresBoolNameOnLoad: src.includes("b.type === 'detect_reroll') block.boolName = b.boolName || '';")
+    }));
+    """
+    out = run_js(body, tmp_path)
+    assert out["hasType"] is True
+    assert out["hasMinRerollsParam"] is True
+    assert out["inPrestartAllowed"] is True
+    assert out["notExcludedFromBattleAllowed"] is True
+    assert out["hasControlsFn"] is True
+    assert out["controlsUsesBoolNamePicker"] is True
+    assert out["dispatchesToControlsFn"] is True
+    assert out["restoresBoolNameOnLoad"] is True
 
 
 def test_count_loop_blocks_of_type_counts_loop_a_and_b_including_nested(tmp_path):

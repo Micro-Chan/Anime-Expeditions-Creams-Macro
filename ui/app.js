@@ -4100,6 +4100,14 @@ const BLOCK_TYPES = {
   // case). At most one per template -- see the singleton guard in addBlock/
   // cloneBlock below.
   at_checkpoint:      { label: 'At Checkpoint',      group: 'Logic',  color: 'var(--sky)',   params: [] },
+  // Not a branching type -- no then/else, just a boolName picker (like If)
+  // plus one number param. Scans for expeditions_equip_reroll, reads the
+  // 1-6 count next to it (core.equip_reroll.read_reroll_count), and sets
+  // the picked boolean True/False against minRerolls -- see
+  // renderDetectRerollControls. Pre Start's the confirmed use (a gate
+  // before committing to a run), but nothing here is Pre-Start-specific,
+  // so it's left in the normal Battle/Loop set too.
+  detect_reroll:      { label: 'Detect Equipment Rerolls', group: 'Logic', color: 'var(--slate)', params: [{ key: 'minRerolls', type: 'number', placeholder: 'min rerolls', default: 3 }] },
 };
 
 // Two phases: Pre Start (walk to your spot, place starter units, flip any
@@ -4127,7 +4135,7 @@ const PHASE_ALLOWED = {
   // path) is a normal addable block, allowed in BOTH phases -- you can drop
   // several into Pre Start to walk between multiple starter-placement spots
   // before the match begins. The Loop phases take the same set as Battle.
-  prestart: ['place_unit', 'setting_change', 'auto_upgrade_unit', 'target_priority', 'click_unit', 'walk', 'record', 'click', 'wait_ms', 'send_key', 'detect', 'set_boolean', 'if', 'repeat_while'],
+  prestart: ['place_unit', 'setting_change', 'auto_upgrade_unit', 'target_priority', 'click_unit', 'walk', 'record', 'click', 'wait_ms', 'send_key', 'detect', 'set_boolean', 'if', 'repeat_while', 'detect_reroll'],
   battle: _BATTLE_ALLOWED,
   // at_checkpoint is Loop A/B only, not plain Battle -- Battle's block list
   // only ever gets a single pass through the whole match (see
@@ -4297,6 +4305,7 @@ function addBlock(type, key, atIndex) {
   if (type === 'if') { Object.assign(block, { boolName: '', then: [], else: [] }); }
   if (type === 'repeat_while') { Object.assign(block, { boolName: '', then: [], else: [] }); }
   if (type === 'at_checkpoint') { Object.assign(block, { then: [], else: [] }); }
+  if (type === 'detect_reroll') { block.boolName = ''; }
   const list = resolveContainer(key);
   if (!list) return;
   if (atIndex == null) list.push(block);
@@ -5168,6 +5177,14 @@ function renderSetBooleanControls(b) {
   return name + value;
 }
 
+// Detect Equipment Rerolls: which boolean to write the result to (same
+// picker If/Repeat While use) -- the minRerolls number itself is a normal
+// param, already rendered by renderBlockRow's generic `inputs` line since
+// this type isn't in that line's bespoke-render exclusion list.
+function renderDetectRerollControls(b) {
+  return renderBoolNamePicker(b);
+}
+
 // `key` is the container key the block lives in (a phase, or a Detect branch
 // -- see findBlockLocation), threaded through every drag/drop handler so a row
 // knows which list it belongs to.
@@ -5195,7 +5212,8 @@ function renderBlockRow(b, key) {
     : b.type === 'sell_unit' ? renderSellUnitControls(b)
     : b.type === 'target_priority' ? renderTargetPriorityControls(b)
     : b.type === 'click_unit' ? renderClickUnitControls(b)
-    : b.type === 'set_boolean' ? renderSetBooleanControls(b) : '';
+    : b.type === 'set_boolean' ? renderSetBooleanControls(b)
+    : b.type === 'detect_reroll' ? renderDetectRerollControls(b) : '';
   const entering = enteringBlockIds.has(b.id) ? ' entering' : '';
   // Walk Path is the one unique pinned block: the sole Pre Start copy
   // (legacy templates can still carry extras, which render as normal
@@ -7341,7 +7359,7 @@ function blockFromSaved(b) {
     block.loopAttempts = Math.max(0, Math.floor(Number(b.loopAttempts) || 0));
     block.loopIntervalMs = Math.max(100, Math.min(60000, Math.floor(Number(b.loopIntervalMs) || 1000)));
   }
-  if (b.type === 'if' || b.type === 'repeat_while') block.boolName = b.boolName || '';
+  if (b.type === 'if' || b.type === 'repeat_while' || b.type === 'detect_reroll') block.boolName = b.boolName || '';
   if (BRANCHING_TYPES.includes(b.type)) {
     block.then = (Array.isArray(b.then) ? b.then : []).map(blockFromSaved);
     block.else = (Array.isArray(b.else) ? b.else : []).map(blockFromSaved);

@@ -319,6 +319,10 @@ class BlockOps:
                 self._run_set_boolean_tick(block, self._battle_block_index + 1)
                 done = True
                 self._battle_block_state = {}
+            elif btype == "detect_reroll":
+                self._run_detect_reroll_tick(hwnd, block, self._battle_block_index + 1)
+                done = True
+                self._battle_block_state = {}
             else:
                 self._log(f'[Macro] Skipping Battle block #{self._battle_block_index + 1} '
                            f'("{btype}") -- not runnable in Battle yet.')
@@ -1076,6 +1080,8 @@ class BlockOps:
             self._run_click_unit_tick(hwnd, stop_event, block, i, phase_label="Pre Start")
         elif btype == "set_boolean":
             self._run_set_boolean_tick(block, i, phase_label="Pre Start")
+        elif btype == "detect_reroll":
+            self._run_detect_reroll_tick(hwnd, block, i, phase_label="Pre Start")
         else:
             self._log(f'[Macro] Skipping block #{i} ("{btype}") -- not runnable in Pre Start yet.')
 
@@ -1160,6 +1166,34 @@ class BlockOps:
         value = str(block.get("params", {}).get("value") or "False") == "True"
         self._macro_booleans[name] = value
         self._log(f'{label}: "{name}" = {value}.')
+
+    def _run_detect_reroll_tick(self, hwnd, block: dict, block_num: int, phase_label: str = "Battle") -> None:
+        """One-shot: Detect Equipment Rerolls. Scans for
+        expeditions_equip_reroll and reads the 1-6 count next to it (see
+        core.equip_reroll.read_reroll_count), then sets a named boolean True
+        if that count is at least the block's configured minimum, False
+        otherwise -- including when the icon isn't found at all, since no
+        reading at all is exactly as "not worth it" as a low one. Read later
+        by If blocks via _evaluate_if, same self._macro_booleans pool Set
+        Boolean writes to."""
+        from . import equip_reroll
+        label = f'{phase_label} block #{block_num} (Detect Equipment Rerolls)'
+        name = (block.get("boolName") or "").strip()
+        if not name:
+            self._log(f'{label}: no variable selected -- skipping.')
+            return
+        try:
+            minimum = int(block.get("params", {}).get("minRerolls") or 1)
+        except (TypeError, ValueError):
+            minimum = 1
+        count = equip_reroll.read_reroll_count(hwnd)
+        if count is None:
+            self._log(f'{label}: "expeditions_equip_reroll" not found -- setting "{name}" to False.')
+            self._macro_booleans[name] = False
+            return
+        result = count >= minimum
+        self._log(f'{label}: detected {count} reroll(s) (need >= {minimum}) -- setting "{name}" to {result}.')
+        self._macro_booleans[name] = result
 
     def _run_walk_path_block(self, hwnd, stop_event: threading.Event, task: dict, default_walk_paths: dict,
                                block: dict, first_repeat: bool) -> None:
