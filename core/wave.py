@@ -37,7 +37,13 @@ WAVE_DIGIT_SEARCH_HALF_HEIGHT = 5
 # Two candidate hits (any characters, not just the same digit -- see
 # _dedupe_hits) whose centers are this close together are the same glyph
 # read by two different templates; only the higher-scoring one survives.
-WAVE_DEDUP_DISTANCE_PX = 2
+# Every digit template is at least 3px wide, so this can't be raised much
+# further without risking two genuinely adjacent distinct digits (a narrow
+# "1" next to another digit) collapsing into one and silently dropping a
+# real character -- 3px matched a real double-detection on "1" (a 3x8px
+# template, narrow enough that matchTemplate's correlation plateau near the
+# true position spans more than the old 2px radius) without that risk.
+WAVE_DEDUP_DISTANCE_PX = 3
 
 
 def read_wave(region_bgr):

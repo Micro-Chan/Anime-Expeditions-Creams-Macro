@@ -3312,8 +3312,8 @@ class Api:
         # the canvas image area and JS sends it through as-is.
         x0, y0 = max(0, int(x)), max(0, int(y))
         x1, y1 = min(iw, int(x) + int(w)), min(ih, int(y) + int(h))
-        if x1 - x0 < 4 or y1 - y0 < 4:
-            # Anything smaller than 4px a side is a misdrag, not a usable
+        if x1 - x0 < 3 or y1 - y0 < 3:
+            # Anything smaller than 3px a side is a misdrag, not a usable
             # reference crop -- matching needs actual shape/edge content.
             return {"ok": False, "reason": "too_small"}
         crop = image[y0:y1, x0:x1]

@@ -137,9 +137,20 @@ def test_dedupe_hits_keeps_highest_scoring_candidate_at_same_position():
 def test_dedupe_hits_distance_boundary_is_inclusive():
     hits = [
         {"char": "1", "cx": 10, "score": 0.99},
-        {"char": "7", "cx": 12, "score": 0.80},  # exactly WAVE_DEDUP_DISTANCE_PX away
+        # Exactly WAVE_DEDUP_DISTANCE_PX away, not hardcoded, so this stays
+        # correct if that constant is ever retuned again.
+        {"char": "7", "cx": 10 + wave.WAVE_DEDUP_DISTANCE_PX, "score": 0.80},
     ]
     assert wave._dedupe_hits(hits) == [{"char": "1", "cx": 10, "score": 0.99}]
+
+
+def test_dedupe_hits_just_past_the_boundary_keeps_both():
+    hits = [
+        {"char": "1", "cx": 10, "score": 0.99},
+        {"char": "7", "cx": 10 + wave.WAVE_DEDUP_DISTANCE_PX + 1, "score": 0.80},
+    ]
+    kept = sorted(wave._dedupe_hits(hits), key=lambda h: h["cx"])
+    assert kept == hits
 
 
 # --------------------------------------------------------------------------

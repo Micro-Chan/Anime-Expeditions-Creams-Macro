@@ -6767,8 +6767,8 @@ function imUpdateReadout() {
 async function saveImageCrop() {
   const btn = document.getElementById('im-save-btn');
   const name = document.getElementById('im-save-name').value.trim();
-  if (!imState.sel || imState.sel.w < 4 || imState.sel.h < 4) {
-    addLog('[Images] Drag a box around the button/text first (at least 4x4px).');
+  if (!imState.sel || imState.sel.w < 3 || imState.sel.h < 3) {
+    addLog('[Images] Drag a box around the button/text first (at least 3x3px).');
     return;
   }
   if (!name) {
