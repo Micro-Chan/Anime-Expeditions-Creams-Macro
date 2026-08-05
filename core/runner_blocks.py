@@ -315,6 +315,10 @@ class BlockOps:
                 self._run_leave_at_minute_tick(hwnd, stop_event, block, self._battle_block_index + 1)
                 done = True
                 self._battle_block_state = {}
+            elif btype == "end_run":
+                self._run_end_run_tick(hwnd, stop_event, block, self._battle_block_index + 1)
+                done = True
+                self._battle_block_state = {}
             elif btype == "set_boolean":
                 self._run_set_boolean_tick(block, self._battle_block_index + 1)
                 done = True
@@ -375,6 +379,36 @@ class BlockOps:
             return False
         self._click_return_to_lobby_if_found(hwnd, stop_event)
         return not self._checkpoint(stop_event)
+
+    def _run_end_run_tick(self, hwnd, stop_event: threading.Event, block: dict, block_num: int,
+                            phase_label: str = "Battle") -> None:
+        """End Run block (Macro Manager > Setup > End Run): opens Settings
+        (nav_settings) and taps Restart (restart_btn) twice -- the second tap
+        confirms the same-looking confirmation prompt -- which resets the
+        stage immediately instead of playing it out to Victory/Defeat. On
+        success this sets self._battle_end_run_requested, which
+        _wait_for_match_result checks (same shape as Leave at Minute's
+        _battle_leave_requested) to stop watching for victory/defeat and
+        report "end_run" -- _run_task then records that as a win and re-enters
+        via the ordinary _wait_teleport_in wait (NOT left_live_match's lobby
+        re-navigation): Restart re-teleports into the SAME stage, the same
+        brief loading Repeat Stage causes, not the lobby."""
+        label = f"{phase_label} block #{block_num} (End Run)"
+        self._log(f"[Macro] {label}: opening Settings to restart.")
+        if not self._click_found_image(hwnd, "nav_settings", NAV_CLICK_TIMEOUT, stop_event):
+            self._log(f"[Macro] {label}: couldn't open Settings -- skipping.")
+            return
+        time.sleep(0.7)  # let the Settings panel settle before looking for Restart
+        if not self._click_found_image(hwnd, "restart_btn", NAV_CLICK_TIMEOUT, stop_event):
+            self._log(f"[Macro] {label}: couldn't find Restart -- skipping.")
+            return
+        time.sleep(0.7)  # let the Restart confirmation settle before looking for it again
+        if not self._click_found_image(hwnd, "restart_btn", NAV_CLICK_TIMEOUT, stop_event):
+            self._log(f"[Macro] {label}: couldn't find the Restart confirmation -- skipping.")
+            return
+        time.sleep(4)
+        self._log(f"[Macro] {label}: restart confirmed -- ending the run.")
+        self._battle_end_run_requested = True
 
     def _run_click_block(self, hwnd, stop_event: threading.Event, block: dict, block_num: int,
                            phase_label: str = "Battle") -> None:

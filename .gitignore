@@ -35,6 +35,13 @@ settings.json
 # Runtime log -- local troubleshooting only, no reason to version it.
 *.log
 
+# Reroll distribution data from the (since-removed) TEMP logging in
+# core/runner_blocks.py -- a live macro process still running the old
+# in-memory code can regenerate this file even after the logging itself is
+# gone from source, so keep it ignored rather than relying on it staying
+# deleted.
+reroll_distribution_TEMP.json
+
 # Python
 __pycache__/
 *.pyc

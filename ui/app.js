@@ -4063,6 +4063,15 @@ const BLOCK_TYPES = {
   // core.input_record, runs via core.runner_blocks._run_record_macro_tick.
   // Allowed in both phases, same as Walk.
   record:             { label: 'Record',            group: 'Setup',  color: 'var(--rose)',  params: [] },
+  // Immediately ends the current run via the in-game Restart flow instead of
+  // playing out to Victory/Defeat: opens Settings (nav_settings), then taps
+  // Restart (restart_btn) twice -- the second tap confirms the prompt. Battle/
+  // Loop only (not Pre Start -- nothing to end yet); no params, no bespoke
+  // controls needed. Runs via core.runner_blocks._run_end_run_tick, which
+  // reports back to core.runner._wait_for_match_result -- the run counts as a
+  // win and the macro restarts from the top on the same stage, no
+  // Victory/Defeat search.
+  end_run:            { label: 'End Run',           group: 'Setup',  color: 'var(--rose)',  params: [] },
   // Detect: search for an image (or a combination, or a raw condition) and run
   // one of two nested block groups -- Then when found, Else when not. The
   // macro's one branching block. Bespoke controls: renderDetectControls();
@@ -4099,7 +4108,7 @@ const BLOCK_TYPES = {
   // idle/holding/released handoff and core.detect.flatten's at_checkpoint
   // case). At most one per template -- see the singleton guard in addBlock/
   // cloneBlock below.
-  at_checkpoint:      { label: 'At Checkpoint',      group: 'Logic',  color: 'var(--sky)',   params: [] },
+  at_checkpoint:      { label: 'At Checkpoint',      group: 'Expedition', color: 'var(--sky)',   params: [] },
   // Not a branching type -- no then/else, just a boolName picker (like If)
   // plus one number param. Scans for expeditions_equip_reroll, reads the
   // 1-6 count next to it (core.equip_reroll.read_reroll_count), and sets
@@ -4107,7 +4116,7 @@ const BLOCK_TYPES = {
   // renderDetectRerollControls. Pre Start's the confirmed use (a gate
   // before committing to a run), but nothing here is Pre-Start-specific,
   // so it's left in the normal Battle/Loop set too.
-  detect_reroll:      { label: 'Detect Equipment Rerolls', group: 'Logic', color: 'var(--slate)', params: [{ key: 'minRerolls', type: 'number', placeholder: 'min rerolls', default: 3 }] },
+  detect_reroll:      { label: 'Detect Equipment Rerolls', group: 'Expedition', color: 'var(--slate)', params: [{ key: 'minRerolls', type: 'number', placeholder: 'min rerolls', default: 3 }] },
 };
 
 // Two phases: Pre Start (walk to your spot, place starter units, flip any

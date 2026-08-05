@@ -151,6 +151,10 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
         # (which never goes through _play_one_match) resolves them too.
         self._battle_started_at = 0.0
         self._battle_leave_requested = False
+        # End Run battle block (see runner_blocks): set when it's clicked the
+        # in-game Restart through to its confirmation. Same shape as
+        # _battle_leave_requested above -- see _wait_for_match_result.
+        self._battle_end_run_requested = False
         # Expedition checkpoint engine choice (see the EXP_COLOR_* block) +
         # the sighting debounce clock it uses; the real values arrive via
         # start()/_run, these are just never-ran-yet defaults. Same for the
@@ -1086,10 +1090,17 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
                     task_failed = True
                     break
                 duration = self._format_duration(time.time() - battle_started)
-                # Both the Infinite wave-limit exit ("wave_limit") and a
-                # "Leave at Minute" battle block ("left") leave the LIVE match
-                # to the lobby themselves -- no Victory/Defeat screen follows,
-                # and the next repeat must re-enter from the lobby.
+                # The Infinite wave-limit exit ("wave_limit") and a "Leave at
+                # Minute" battle block ("left") leave the LIVE match to the
+                # lobby themselves -- no Victory/Defeat screen follows, and
+                # the next repeat must re-enter from the lobby (see
+                # left_live_match's use below). An End Run block ("end_run")
+                # also skips the result screen -- handled separately just
+                # below -- but does NOT belong in left_live_match: Restart
+                # re-teleports into the SAME stage (confirmed: same brief
+                # loading Repeat Stage causes), not the lobby, so its re-entry
+                # needs the ordinary _wait_teleport_in wait a couple hundred
+                # lines down, not left_live_match's _run_task_setup lobby nav.
                 left_live_match = result in ("wave_limit", "left")
 
                 # Consecutive-loss fail-safe: a genuine unbroken loss streak
@@ -1154,10 +1165,24 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
                     and not fuel_wants_in
                     and not auto_shop_wants_in
                 )
+                # An End Run block already left the run via the in-game
+                # Restart, not a real Victory screen -- record it as a win
+                # directly (same background report _handle_match_result would
+                # have kicked off) instead of running the win-only result-
+                # screen handling below (reward-card dismissal, Repeat/Leave
+                # Stage, ...), none of which applies since there's no result
+                # screen up at all.
+                if result == "end_run":
+                    threading.Thread(
+                        target=self._finish_match_result_background,
+                        args=("win", map_name, duration, task, webhook, None),
+                        daemon=True,
+                    ).start()
+                    self._log(f"[Macro] End Run ({duration}) -- recorded as a win, restarting from the top.")
                 # The bounded-Infinite path and the Leave-at-Minute block
                 # (left_live_match) already left the live match, so there is no
                 # Victory/Defeat screen to process here.
-                if not left_live_match and not self._handle_match_result(
+                elif not left_live_match and not self._handle_match_result(
                         hwnd, stop_event, task, result, duration, webhook,
                         repeat=(not is_last_repeat) and not challenge_wants_in
                         and not crafting_wants_in and not fuel_wants_in
@@ -1711,6 +1736,7 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
         # Reset per match so the minute is measured from THIS battle's start.
         self._battle_started_at = time.time()
         self._battle_leave_requested = False
+        self._battle_end_run_requested = False
         # Loop A / Loop B: their own index+state, ticked and restarted every
         # poll alongside Battle (see _tick_loop_phases).
         loop_blocks = self._load_loop_blocks(task)
@@ -1891,6 +1917,14 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
             if self._battle_leave_requested:
                 self._battle_leave_requested = False
                 return "left"
+            # An End Run block (Battle or a Loop phase) already worked its
+            # way through the in-game Restart to its confirmation -- no
+            # Victory/Defeat screen is coming, so stop watching for one.
+            # See core.runner_blocks._run_end_run_tick and _run_task's
+            # end_run handling (recorded as a win, no result-screen UI).
+            if self._battle_end_run_requested:
+                self._battle_end_run_requested = False
+                return "end_run"
 
             # Roblox's own Reconnect/Retry prompt can show up mid-battle too,
             # not just during the teleport-in wait -- this used to only be
