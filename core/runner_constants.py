@@ -544,7 +544,7 @@ TEAM_LOADOUT_CONFIRM_RETRY_ATTEMPTS = 3
 # first so the button has stopped moving before it's located, so the found
 # position is the final one.
 TEAM_LOADOUT_CONFIRM_SETTLE = 2.0
-TEAM_LOADOUT_CLICK_1 = (800, 324)  # Loadout 1's row
+TEAM_LOADOUT_CLICK_1 = (750, 324)  # Loadout 1's row
 TEAM_LOADOUT_ROW_HEIGHT = 126
 TEAM_LOADOUT_MAX_SUPPORTED = 8
 # The configured X is the old button-edge coordinate. The current green
@@ -555,7 +555,7 @@ TEAM_LOADOUT_BUTTON_CENTER_X_OFFSET = 50
 # Live 1152x756 measurements: each notch shifts the list by 100px and current
 # rows are 137px apart. Seven notches reaches the bottom; the last slot's
 # button is clipped by the panel but remains clickable at y=579.
-TEAM_LOADOUT_SCROLLBAR_HOVER = (927, 400)
+TEAM_LOADOUT_SCROLLBAR_HOVER = (895, 400)
 TEAM_LOADOUT_WHEEL_DELTA = -120
 TEAM_LOADOUT_WHEEL_MAX_STEPS = 7
 TEAM_LOADOUT_WHEEL_ROW_SHIFT = 100

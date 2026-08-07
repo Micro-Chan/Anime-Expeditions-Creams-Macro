@@ -389,7 +389,7 @@ def test_scrolled_loadouts_use_wheel_over_scrollbar_and_click_visible_button_cen
     assert runner._apply_team_loadout_panel(
         123, stop, team_match, team_num, "include") is True
 
-    runner._mouse.move_to.assert_called_once_with(927, 400)
+    runner._mouse.move_to.assert_called_once_with(*runner_module.TEAM_LOADOUT_SCROLLBAR_HOVER)
     runner._mouse.nudge.assert_called_once_with()
     assert runner._mouse.scroll.call_args_list == [
         call(runner_module.TEAM_LOADOUT_WHEEL_DELTA)

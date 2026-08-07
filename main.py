@@ -188,7 +188,7 @@ MACRO_COORD_DEFAULTS = {
     "challenge_stage_2_x": 460, "challenge_stage_2_y": 400,
     "challenge_stage_3_x": 460, "challenge_stage_3_y": 533,
     "expedition_difficulty_x": 441, "expedition_difficulty_y": 524,
-    "team_loadout_x": 800, "team_loadout_y": 324, "team_loadout_row_height": 126,
+    "team_loadout_x": 750, "team_loadout_y": 324, "team_loadout_row_height": 126,
     # Optional override for the first Teams click. None means use the live
     # image match center; the Macro Coordinates picker can save a safer point
     # inside the button for layouts where its lower/inner area registers more
