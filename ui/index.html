@@ -1024,6 +1024,16 @@
                 <button id="toggle-memory-refresh" class="toggle-switch" onclick="toggleSetting('memory_refresh_enabled', this)"></button>
               </div>
             </div>
+            <div class="setting-row" style="border-bottom: none; grid-column: span 2; align-items: flex-start;">
+              <div>
+                <div class="setting-label">Task Timeout</div>
+                <div class="setting-desc">If no repeat of the current task completes within this many minutes, restart Roblox and retry the same task from the lobby instead of waiting indefinitely. This is the only safety net for an Infinite-mode task, which has no per-match timeout of its own.</div>
+              </div>
+              <div class="flex items-center gap-2" style="flex-shrink: 0;">
+                <input id="setting-task-timeout-minutes" type="number" min="15" max="240" step="5" class="block-input" style="width: 78px;" onchange="saveTaskTimeoutMinutes(this)">
+                <span style="font-size: 11px; color: var(--text-muted);">min</span>
+              </div>
+            </div>
             <div class="setting-row">
               <div>
                 <div class="setting-label">Background</div>

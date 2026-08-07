@@ -854,6 +854,18 @@ async function saveMemoryRefreshHours(input) {
   } catch (e) {}
 }
 
+// Stuck-task fail-safe (see TASK_TIMEOUT_* in core/runner_constants.py):
+// no toggle, unlike Periodic Roblox Refresh above -- always on, same as the
+// existing (non-editable) per-match Victory/Defeat timeout it backstops.
+async function saveTaskTimeoutMinutes(input) {
+  const minutes = Math.min(240, Math.max(15, parseFloat(input.value) || 60));
+  input.value = minutes;
+  try {
+    await pywebview.api.set_setting('task_timeout_minutes', minutes);
+    addLog(`[Settings] Task timeout set to ${minutes} minute${minutes === 1 ? '' : 's'}.`);
+  } catch (e) {}
+}
+
 async function toggleSetting(key, btn) {
   const isOn = !btn.classList.contains('on');
   btn.classList.toggle('on', isOn);
@@ -1107,6 +1119,8 @@ async function loadSettingsUI() {
     if (memoryRefreshEl) memoryRefreshEl.classList.toggle('on', !!s.memory_refresh_enabled);
     const memoryRefreshHoursEl = document.getElementById('setting-memory-refresh-hours');
     if (memoryRefreshHoursEl) memoryRefreshHoursEl.value = s.memory_refresh_hours ?? 4;
+    const taskTimeoutMinutesEl = document.getElementById('setting-task-timeout-minutes');
+    if (taskTimeoutMinutesEl) taskTimeoutMinutesEl.value = s.task_timeout_minutes ?? 60;
     const actionDelayEl = document.getElementById('setting-action-delay');
     if (actionDelayEl) actionDelayEl.value = s.action_delay_ms || 0;
     const debugScreenshotsEl = document.getElementById('toggle-debug-screenshots');

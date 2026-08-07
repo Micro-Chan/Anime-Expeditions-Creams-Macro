@@ -285,6 +285,15 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
         self._memory_refresh_enabled = False
         self._memory_refresh_interval_seconds = 0.0
         self._memory_refresh_next_at = None
+        # Stuck-task fail-safe (see TASK_TIMEOUT_* in runner_constants). None
+        # (not 0.0) outside a real task run -- _run_task is what sets this to
+        # a real time.monotonic() value; leaving it None here means a
+        # standalone path that never goes through _run_task (Settings >
+        # Debug's Test Pre Start/Battle, see start_debug_test) never trips
+        # the check in _wait_for_match_result, instead of immediately
+        # "stalling" against an uninitialized 0.0 baseline.
+        self._task_timeout_seconds = TASK_TIMEOUT_DEFAULT_MINUTES * 60.0
+        self._task_last_progress_at = None
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
@@ -329,7 +338,8 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
               webhook: dict = None, expedition_color_buttons: bool = True,
               expedition_camera_o_ms: float = 100, loose_team_ocr_match: bool = False,
               memory_refresh_enabled: bool = False,
-              memory_refresh_hours: float = MEMORY_REFRESH_DEFAULT_HOURS) -> dict:
+              memory_refresh_hours: float = MEMORY_REFRESH_DEFAULT_HOURS,
+              task_timeout_minutes: float = TASK_TIMEOUT_DEFAULT_MINUTES) -> dict:
         if self.is_running():
             return {"ok": False, "reason": "already_running"}
         self._stop_event = threading.Event()
@@ -354,6 +364,13 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
         self._memory_refresh_next_at = (
             time.monotonic() + self._memory_refresh_interval_seconds
             if self._memory_refresh_enabled else None)
+        try:
+            timeout_minutes = float(task_timeout_minutes)
+        except (TypeError, ValueError):
+            timeout_minutes = TASK_TIMEOUT_DEFAULT_MINUTES
+        timeout_minutes = min(TASK_TIMEOUT_MAX_MINUTES,
+                              max(TASK_TIMEOUT_MIN_MINUTES, timeout_minutes))
+        self._task_timeout_seconds = timeout_minutes * 60.0
         self._current_hwnd = None
         self._last_applied_team_loadout = None
         self._consecutive_losses = 0
@@ -980,6 +997,13 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
             "repeat_total": repeat_total,
         }
         task_started_at = time.monotonic()
+        # Stuck-task fail-safe clock (see TASK_TIMEOUT_* in
+        # runner_constants and the stall check in _wait_for_match_result) --
+        # starts fresh for this task and is pushed forward every time a
+        # repeat actually completes (see the repeat loop below), so it only
+        # trips after a genuine stretch of no progress, not just a task that
+        # legitimately takes a long time across many successful repeats.
+        self._task_last_progress_at = time.monotonic()
         self._send_progress_webhook(
             webhook,
             progress_task,
@@ -1084,11 +1108,37 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
                 result = self._play_one_match(hwnd, stop_event, task, default_walk_paths,
                                                 first_repeat=fresh_entry, webhook=webhook)
                 fresh_entry = False
+                if result == "stalled":
+                    # No repeat of this task has completed in
+                    # self._task_timeout_seconds (see the check in
+                    # _wait_for_match_result) -- force a relaunch instead of
+                    # falling through to _recover_to_lobby's UI-only recovery
+                    # below, which can't fix a genuinely stuck client. Then
+                    # fall into the SAME task_failed/break path a plain
+                    # failure takes, so the outer recovery_attempt loop
+                    # re-enters via _run_task_setup and resumes from
+                    # repeats_done -- exactly like every other failure here,
+                    # just with an extra relaunch first.
+                    if stop_event.is_set():
+                        return False
+                    timeout_min = self._task_timeout_seconds / 60.0
+                    self._log(f'[Macro] Task {task_index}/{task_count} ("{map_name}") made no progress for '
+                               f'{timeout_min:.0f} min -- relaunching Roblox before retrying.')
+                    screenshot_path = self._save_debug_screenshot_unconditional(hwnd, "task_stalled_restart")
+                    self._send_event_webhook(
+                        webhook, task, "Task Stalled -- Restarting Roblox",
+                        f'No repeat of "{map_name}" completed within {timeout_min:.0f} minutes -- '
+                        f"restarting Roblox before retrying.", 0xE05A6D, screenshot_path)
+                    self._attempt_rejoin(hwnd, stop_event)
+                    self._task_last_progress_at = time.monotonic()
+                    task_failed = True
+                    break
                 if result is None:
                     if stop_event.is_set():
                         return False
                     task_failed = True
                     break
+                self._task_last_progress_at = time.monotonic()
                 duration = self._format_duration(time.time() - battle_started)
                 # The Infinite wave-limit exit ("wave_limit") and a "Leave at
                 # Minute" battle block ("left") leave the LIVE match to the
@@ -1884,6 +1934,20 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
         while deadline is None or time.time() < deadline:
             if self._checkpoint(stop_event):
                 return None
+
+            # Stuck-task fail-safe (see TASK_TIMEOUT_* in runner_constants):
+            # checked every poll, not just at a repeat boundary, so it can
+            # interrupt a single hung match -- the only safety net an
+            # Infinite-mode task has at all, since MATCH_RESULT_TIMEOUT below
+            # never applies once a wave limit is configured (deadline stays
+            # None). self._task_last_progress_at is only real (not None)
+            # inside an actual _run_task run -- see its declaration in
+            # __init__ for why a standalone debug path must never trip this.
+            if (self._task_last_progress_at is not None
+                    and time.monotonic() - self._task_last_progress_at >= self._task_timeout_seconds):
+                self._log(f"[Macro] No repeat has completed in "
+                           f"{self._task_timeout_seconds / 60:.0f} min -- treating this task as stalled.")
+                return "stalled"
 
             # Leaving an Infinite run at its requested wave is a hard task
             # boundary, so check it before Battle blocks. Upgrade Unit can

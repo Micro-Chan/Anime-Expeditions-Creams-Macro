@@ -805,6 +805,9 @@ class Api:
             # thread during FPS-sensitive capture or input.
             "memory_refresh_enabled": data.get("memory_refresh_enabled", False),
             "memory_refresh_hours": data.get("memory_refresh_hours", 4.0),
+            # Stuck-task fail-safe (Settings > General > Task Timeout) -- see
+            # core.runner_constants.TASK_TIMEOUT_DEFAULT_MINUTES.
+            "task_timeout_minutes": data.get("task_timeout_minutes", 60.0),
             # Off by default -- see core.runner._apply_team_loadout_panel.
             # The strict "unitteams" OCR confirmation is correct for most
             # setups; this loosens it to also accept "teams"/"team"/"loadout"
@@ -1964,7 +1967,8 @@ class Api:
             expedition_camera_o_ms=data.get("expedition_camera_o_ms", 100),
             loose_team_ocr_match=data.get("loose_team_ocr_match", False),
             memory_refresh_enabled=data.get("memory_refresh_enabled", False),
-            memory_refresh_hours=data.get("memory_refresh_hours", 4.0))
+            memory_refresh_hours=data.get("memory_refresh_hours", 4.0),
+            task_timeout_minutes=data.get("task_timeout_minutes", 60.0))
 
     def stop_macro(self) -> dict:
         # An explicit Stop cancels any pending auto-reopen/auto-restart -- if

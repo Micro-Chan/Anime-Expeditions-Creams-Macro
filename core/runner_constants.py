@@ -39,6 +39,20 @@ MEMORY_REFRESH_DEFAULT_HOURS = 4.0
 MEMORY_REFRESH_MIN_HOURS = 1.0
 MEMORY_REFRESH_MAX_HOURS = 12.0
 
+# Stuck-task fail-safe (Settings > General > Task Timeout): if no repeat of
+# the current task completes (win/loss/wave_limit/left/end_run) within this
+# many minutes, _wait_for_match_result treats it as stalled and forces a
+# Roblox relaunch (see core.runner._attempt_rejoin) before retrying the same
+# task from the lobby. This is the ONLY safety net for an Infinite-mode
+# task -- MATCH_RESULT_TIMEOUT below is disabled entirely once a wave limit
+# is configured, since a real Infinite grind can legitimately run past 30
+# minutes. Checked every poll inside _wait_for_match_result (not just at a
+# repeat boundary) so it can interrupt a single hung match, not just a hung
+# task setup between matches.
+TASK_TIMEOUT_DEFAULT_MINUTES = 60.0
+TASK_TIMEOUT_MIN_MINUTES = 15.0
+TASK_TIMEOUT_MAX_MINUTES = 240.0
+
 # Fail-safe: losing the SAME map this many times in a row usually means
 # something's actually wrong (a bad team loadout, a stuck client, a map
 # that's genuinely too hard) rather than plain bad luck -- rather than just

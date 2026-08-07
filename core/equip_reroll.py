@@ -28,7 +28,7 @@ REROLL_BOX_UP = 40
 # digit templates can both clear threshold at nearly the same position on a
 # font where two digits are visually close) whose centers land within this
 # many pixels are the same glyph seen twice; only the higher-scoring one
-# survives. 
+# survives.
 REROLL_DEDUP_DISTANCE_PX = 3
 
 
