@@ -42,6 +42,12 @@ settings.json
 # deleted.
 reroll_distribution_TEMP.json
 
+# Stat Farm's run-scoped progress scratch file (core/runner_statfarm.py) --
+# which fodder units have already hit the player's in-game stat filter, per
+# loadout. Deliberately not durable: wiped at the start of every Stat Farm
+# task run, never meant to be committed or carried between machines.
+statfarm_progress.json
+
 # Python
 __pycache__/
 *.pyc
@@ -62,6 +68,9 @@ dist/
 
 # Personal Claude Code permission grants -- not team-wide.
 .claude/settings.local.json
+
+# Personal Claude Code project instructions -- not meant to be shared/committed.
+CLAUDE.md
 
 # Debug logs -- local troubleshooting only, no reason to version them.
 debug.log.*

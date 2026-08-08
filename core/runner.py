@@ -39,6 +39,7 @@ from .runner_crafting import CraftingOps
 from .runner_expedition import ExpeditionOps
 from .runner_fuel import FuelOps
 from .runner_shop import ShopOps
+from .runner_statfarm import StatFarmOps
 
 
 MAX_EXTRACT_AFTER = 9999
@@ -114,7 +115,7 @@ def _find_team_load_button(frame, expected_y):
     return cx, cy
 
 
-class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, ExpeditionOps, BlockOps):
+class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, ExpeditionOps, BlockOps, StatFarmOps):
     """One run's worth of state -- module-level singleton via main.Api, same
     pattern as core.paths._recorder, since only one run can realistically be
     active at a time (one physical game window, one macro)."""
@@ -294,6 +295,16 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
         # "stalling" against an uninitialized 0.0 baseline.
         self._task_timeout_seconds = TASK_TIMEOUT_DEFAULT_MINUTES * 60.0
         self._task_last_progress_at = None
+        # Stat Farm (see core.runner_statfarm.StatFarmOps): _statfarm_active
+        # gates every Stat-Farm-only check in _wait_for_match_result/
+        # _apply_team_loadout to a complete no-op for every other task type.
+        # The rest are only meaningful while it's True -- set together by
+        # _run_stat_farm_task at the start of each loadout's grind cycle.
+        self._statfarm_active = False
+        self._statfarm_active_loadout = None
+        self._statfarm_check_interval = STATFARM_DEFAULT_CHECK_INTERVAL
+        self._statfarm_wave_target = STATFARM_DEFAULT_WAVE_TARGET
+        self._statfarm_wave_state = {}
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
@@ -984,6 +995,13 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
         should stop); True in every other case, including "gave up on this
         task after repeated failures".
         """
+        if task.get("mode") == "stat_farm":
+            # Stat Farm's state machine (grind-to-worthy -> reroll ->
+            # round-robin to the next loadout) has no fixed repeat count and
+            # nothing else in common with the loop below -- see
+            # core.runner_statfarm._run_stat_farm_task.
+            return self._run_stat_farm_task(hwnd, stop_event, task, task_index, task_count, coords,
+                                              scroll_power, scroll_nudges, default_walk_paths, webhook)
         map_name = task.get("map")
         mode = task.get("mode") or "story"
         repeat_total = max(1, int(task.get("repeat") or 1))
@@ -1953,14 +1971,23 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
             # boundary, so check it before Battle blocks. Upgrade Unit can
             # spend several seconds waiting for its info panel; putting the
             # wave check after that work made the narrow exit-wave window
-            # much easier to miss.
-            if infinite_wave_limit is not None:
+            # much easier to miss. Skipped entirely during a Stat Farm grind
+            # (self._statfarm_active) -- _stat_farm_check_or_restart just
+            # below owns the exit/restart decision for that task type
+            # instead, since "hit the wave target" and "leave to the lobby"
+            # are NOT the same thing there (see its docstring).
+            if infinite_wave_limit is not None and not self._statfarm_active:
                 limit_result = self._check_infinite_wave_limit(
                     hwnd, stop_event, infinite_wave_limit, infinite_wave_state)
                 if limit_result == "wave_limit":
                     return "wave_limit"
                 if limit_result == "failed":
                     return None
+
+            if self._statfarm_active:
+                statfarm_result = self._stat_farm_check_or_restart(hwnd, stop_event)
+                if statfarm_result:
+                    return statfarm_result
 
             if battle_blocks:
                 self._run_battle_blocks_tick(hwnd, stop_event, battle_blocks, first_repeat, macro_name)
@@ -2558,6 +2585,14 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
         starting it, sending the run back through the normal recover-to-
         lobby-and-retry path rather than straight into a loss.
         """
+        if self._statfarm_active:
+            # Stat Farm already forced its own loadout via
+            # _apply_team_loadout_explicit before this Pre Start began (see
+            # core.runner_statfarm) -- letting this template-driven path run
+            # too would silently switch to whatever team the Macro
+            # Operation's own template happens to have configured (if any),
+            # undoing the round-robin's choice right before Start Game.
+            return True
         macro_name = task.get("macro")
         if not macro_name:
             return True
@@ -2578,6 +2613,17 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
         except (TypeError, ValueError):
             self._log(f'[Macro] Team Loadout "{team}" isn\'t a recognized slot number -- skipping.')
             return True
+        return self._apply_team_loadout_explicit(hwnd, stop_event, team_num, equipment)
+
+    def _apply_team_loadout_explicit(self, hwnd, stop_event: threading.Event, team_num: int,
+                                       equipment: str = "include") -> bool:
+        """Presses H, opens the team panel, applies `team_num`/`equipment`
+        directly, closes the panel -- the actual panel mechanics
+        _apply_team_loadout above shares, factored out so a caller with no
+        macro-template concept of its own can force a specific loadout.
+        Used by core.runner_statfarm's round-robin scheduler to swap
+        Team Loadout between Infinite passes, independent of whatever
+        template the task's Macro Operation is set to."""
         if not (1 <= team_num <= TEAM_LOADOUT_MAX_SUPPORTED):
             self._log(f'[Macro] Team Loadout {team_num} needs scrolling to reach (only 1-'
                        f'{TEAM_LOADOUT_MAX_SUPPORTED} are positioned so far) -- skipping.')
@@ -3180,6 +3226,38 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
         self._log(f'[Macro] Found "{name}" (score {match["score"]:.2f}) -- clicking it.{suffix}')
         vision.click_match(self._mouse, hwnd, match, shuffle=shuffle)
         return match
+
+    def _click_restart_via_settings(self, hwnd, stop_event: threading.Event, label: str) -> bool:
+        """Opens Settings (nav_settings) and taps Restart (restart_btn) twice
+        -- the second tap confirms the same-looking confirmation prompt --
+        which resets the current stage immediately instead of playing it out
+        to Victory/Defeat. Shared by the End Run Setup block
+        (_run_end_run_tick in runner_blocks.py, which additionally sets
+        self._battle_end_run_requested and records a win through the normal
+        Task Queue path) and Stat Farm's restart-in-place grind loop
+        (core.runner_statfarm, which is NOT a match result and must NOT
+        touch win-recording -- it calls this directly instead of going
+        through End Run's block-level wrapper). `label` is a caller-chosen
+        prefix for log lines (e.g. "Battle block #2 (End Run)" or
+        "Stat Farm").
+
+        Returns whether the full 3-click sequence completed -- False on the
+        first missing image (Settings, Restart, or its confirmation)."""
+        self._log(f"[Macro] {label}: opening Settings to restart.")
+        if not self._click_found_image(hwnd, "nav_settings", NAV_CLICK_TIMEOUT, stop_event):
+            self._log(f"[Macro] {label}: couldn't open Settings -- skipping.")
+            return False
+        time.sleep(0.7)  # let the Settings panel settle before looking for Restart
+        if not self._click_found_image(hwnd, "restart_btn", NAV_CLICK_TIMEOUT, stop_event):
+            self._log(f"[Macro] {label}: couldn't find Restart -- skipping.")
+            return False
+        time.sleep(0.7)  # let the Restart confirmation settle before looking for it again
+        if not self._click_found_image(hwnd, "restart_btn", NAV_CLICK_TIMEOUT, stop_event):
+            self._log(f"[Macro] {label}: couldn't find the Restart confirmation -- skipping.")
+            return False
+        time.sleep(4)
+        self._log(f"[Macro] {label}: restart confirmed.")
+        return True
 
     def _click_and_verify_gone(self, hwnd, stop_event: threading.Event, name: str, timeout: float,
                                  retry_attempts: int = 3, verify_settle: float = 1.0,

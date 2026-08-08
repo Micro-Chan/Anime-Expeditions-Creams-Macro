@@ -706,3 +706,46 @@ def fuel_refill_interval_seconds(amount) -> int:
     safety = max(FUEL_MIN_SAFETY_SECONDS, int(coverage * FUEL_SAFETY_RATIO))
     return max(FUEL_UNIT_SECONDS, coverage - safety)
 
+
+# Stat Farm (Task Queue mode, see core.runner_statfarm): grinds worthiness on
+# an Infinite map, then spends it rerolling fodder units' (Team Loadout slots
+# 2-6 of 6) stats until an in-game filter hit shows a "confirm" screen, one
+# unit at a time, round-robining across several selected Team Loadouts.
+# Reroll UI click sequence (nav_ui -> nav_stat -> E -> upgrade_statreroll ->
+# unit select -> reroll -> filter check), all fixed points in the docked
+# window's 1152x756 client space, provided directly from live testing.
+STATFARM_UNIT_SELECT_OPEN = (574, 385)
+# The 5 fodder units' fixed grid slots when the unit-selection screen is
+# open. WHICH physical unit lands in which of these 5 positions is not
+# guaranteed (confirmed: order isn't tied to loadout slot 2-6), but each
+# position IS stable across repeated openings for the same loadout (driven
+# by unit level/XP, which doesn't change mid-farm) -- so progress is tracked
+# by grid-position index (0-4) per loadout, not by loadout slot number.
+STATFARM_UNIT_SELECT_GRID = [(369, 259), (446, 259), (531, 259), (611, 259), (289, 337)]
+STATFARM_UNIT_SELECT_CONFIRM = (800, 565)
+# Returns from the post-reroll "stat_filter" confirm screen back to the
+# reroll UI (only shown when a roll actually lands on the player's
+# configured filter tier).
+STATFARM_FILTER_BACK = (660, 425)
+# Exits the reroll UI back to the lobby UI screen (confirmed via nav_play).
+STATFARM_EXIT_TO_LOBBY = (828, 228)
+# In-battle hotbar hover points for the 5 fodder units (worthiness check),
+# same left-to-right grid-position-index convention as
+# STATFARM_UNIT_SELECT_GRID -- separate screen, separate coordinates.
+STATFARM_HOTBAR_HOVER = [(470, 694), (540, 694), (610, 694), (680, 694), (750, 694)]
+# Up to 4 rolls per unit per Infinite pass -- 100% worthiness per roll, capped
+# at 400%. A unit that doesn't hit the filter within 4 rolls just waits for
+# the next pass's fresh 400% to try again.
+STATFARM_REROLL_MAX_ATTEMPTS = 4
+# How long to poll for "stat_filter" after each reroll_btn click.
+STATFARM_FILTER_CHECK_TIMEOUT = 0.2
+# Hover settle before checking worth_check_400 (tooltip render delay).
+STATFARM_HOVER_SETTLE = 0.3
+# The reroll flow's four confirmed "wait 1s" steps (nav_ui, nav_stat, E,
+# upgrade_statreroll).
+STATFARM_NAV_WAIT = 1.0
+# Settle between clicking a unit-selection grid cell and confirming it.
+STATFARM_CLICK_SETTLE = 0.1
+STATFARM_DEFAULT_WAVE_TARGET = 150
+STATFARM_DEFAULT_CHECK_INTERVAL = 10
+

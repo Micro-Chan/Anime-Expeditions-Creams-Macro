@@ -1,0 +1,597 @@
+{
+  "name": "StatFarmTemplate",
+  "blocks": {
+    "team": "",
+    "equipment": "include",
+    "prestart": [
+      {
+        "type": "walk_path",
+        "params": {},
+        "once": true,
+        "mode": "auto",
+        "pathName": "",
+        "sprint": false
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "DarkMage",
+          "x": 684,
+          "y": 20
+        },
+        "once": false,
+        "hotkey": "1",
+        "ignoreHighlight": true,
+        "retryUntilPlaced": false
+      },
+      {
+        "type": "auto_upgrade_unit",
+        "params": {
+          "index": "1",
+          "priority": "1"
+        },
+        "once": false,
+        "hotkey": "y",
+        "useKey": true
+      },
+      {
+        "type": "set_boolean",
+        "params": {
+          "name": "DarkCheck",
+          "value": "True"
+        },
+        "once": false
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "2",
+          "x": 541,
+          "y": 305
+        },
+        "once": false,
+        "hotkey": "2",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "2",
+          "x": 542,
+          "y": 294
+        },
+        "once": false,
+        "hotkey": "2",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "2",
+          "x": 542,
+          "y": 283
+        },
+        "once": false,
+        "hotkey": "2",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "2",
+          "x": 542,
+          "y": 271
+        },
+        "once": false,
+        "hotkey": "2",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "2",
+          "x": 542,
+          "y": 258
+        },
+        "once": false,
+        "hotkey": "2",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "3",
+          "x": 568,
+          "y": 306
+        },
+        "once": false,
+        "hotkey": "3",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "3",
+          "x": 567,
+          "y": 295
+        },
+        "once": false,
+        "hotkey": "3",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "3",
+          "x": 567,
+          "y": 282
+        },
+        "once": false,
+        "hotkey": "3",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "3",
+          "x": 566,
+          "y": 270
+        },
+        "once": false,
+        "hotkey": "3",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "3",
+          "x": 566,
+          "y": 258
+        },
+        "once": false,
+        "hotkey": "3",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "4",
+          "x": 584,
+          "y": 306
+        },
+        "once": false,
+        "hotkey": "4",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "4",
+          "x": 585,
+          "y": 294
+        },
+        "once": false,
+        "hotkey": "4",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "4",
+          "x": 586,
+          "y": 282
+        },
+        "once": false,
+        "hotkey": "4",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "4",
+          "x": 585,
+          "y": 270
+        },
+        "once": false,
+        "hotkey": "4",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "4",
+          "x": 585,
+          "y": 258
+        },
+        "once": false,
+        "hotkey": "4",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "5",
+          "x": 558,
+          "y": 340
+        },
+        "once": false,
+        "hotkey": "5",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "5",
+          "x": 558,
+          "y": 354
+        },
+        "once": false,
+        "hotkey": "5",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "5",
+          "x": 558,
+          "y": 368
+        },
+        "once": false,
+        "hotkey": "5",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "5",
+          "x": 558,
+          "y": 381
+        },
+        "once": false,
+        "hotkey": "5",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "5",
+          "x": 559,
+          "y": 393
+        },
+        "once": false,
+        "hotkey": "5",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "6",
+          "x": 583,
+          "y": 393
+        },
+        "once": false,
+        "hotkey": "6",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "6",
+          "x": 583,
+          "y": 379
+        },
+        "once": false,
+        "hotkey": "6",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "6",
+          "x": 581,
+          "y": 367
+        },
+        "once": false,
+        "hotkey": "6",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "6",
+          "x": 582,
+          "y": 353
+        },
+        "once": false,
+        "hotkey": "6",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "place_unit",
+        "params": {
+          "name": "6",
+          "x": 581,
+          "y": 340
+        },
+        "once": false,
+        "hotkey": "6",
+        "ignoreHighlight": true
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "2",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "3",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "4",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "5",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "6",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "7",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "8",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "9",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "10",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "11",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "12",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "13",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "14",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "15",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "16",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "17",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "18",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "19",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "20",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "21",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "22",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "23",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "24",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "25",
+          "priority": "Last"
+        },
+        "once": false
+      },
+      {
+        "type": "target_priority",
+        "params": {
+          "index": "26",
+          "priority": "Last"
+        },
+        "once": false
+      }
+    ],
+    "battle": [],
+    "loop_a": [
+      {
+        "type": "if",
+        "params": {},
+        "once": false,
+        "boolName": "DarkCheck",
+        "then": [
+          {
+            "type": "wait_wave",
+            "params": {
+              "wave": "15"
+            },
+            "once": false
+          },
+          {
+            "type": "click_unit",
+            "params": {
+              "index": "4"
+            },
+            "once": false
+          },
+          {
+            "type": "detect",
+            "params": {},
+            "once": false,
+            "mode": "single",
+            "image": "DarkMageIce",
+            "advanced": true,
+            "images": [
+              "DarkMageIce"
+            ],
+            "logic": "and",
+            "expr": "",
+            "region": null,
+            "threshold": null,
+            "showAll": false,
+            "loop": false,
+            "loopAttempts": 0,
+            "loopIntervalMs": 1000,
+            "then": [
+              {
+                "type": "click",
+                "params": {
+                  "x": "13",
+                  "y": "8"
+                },
+                "once": false
+              }
+            ],
+            "else": [
+              {
+                "type": "send_key",
+                "params": {
+                  "hold_ms": 0,
+                  "repeat": "8"
+                },
+                "once": false,
+                "key": "r"
+              },
+              {
+                "type": "set_boolean",
+                "params": {
+                  "name": "DarkCheck",
+                  "value": "False"
+                },
+                "once": false
+              }
+            ]
+          }
+        ],
+        "else": []
+      }
+    ],
+    "loop_b": []
+  }
+}

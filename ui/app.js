@@ -2200,6 +2200,15 @@ const TASK_DATA = {
     maps: ['Solo Tournament'],
     isTournament: true,
   },
+  stat_farm: {
+    label: 'Stat Farm',
+    // Always runs the chosen map's Infinite stage internally (see
+    // core.runner._run_stat_farm_task, which forces mode: 'story',
+    // stage: 'Infinite' on its own sub-task) -- no stage/difficulty picker
+    // here, just which Infinite-capable map to grind on.
+    maps: ['School Grounds', 'Rose Kingdom', 'Fairy King Forest', "King's Tomb", 'Flower Forest'],
+    isStatFarm: true,
+  },
 };
 
 let taskCards = [];
@@ -2214,6 +2223,9 @@ let taskTemplates = [];  // Macro Manager template names, for the Macro Operatio
 let taskSaveTimer = null;
 const DEFAULT_INFINITE_WAVE_LIMIT = 20;
 const MAX_EXTRACT_AFTER = 9999;
+const STATFARM_DEFAULT_WAVE_TARGET = 150;
+const STATFARM_DEFAULT_CHECK_INTERVAL = 10;
+const STATFARM_LOADOUT_COUNT = 8;
 
 function newTaskId() {
   return 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -2231,6 +2243,12 @@ function defaultTask() {
     // every banked relic. act4_macro is Act 4's own Macro Operation (it plays
     // nothing like Acts 1-3). See runner._run_act4_diversion.
     act4_on_drop: false, act4_mode: 'once', act4_macro: '',
+    // Stat Farm-only: which of your 8 Team Loadout slots to round-robin
+    // farm, how deep to grind before restarting in place if worthiness
+    // isn't full yet, and how often (in waves) to check it. See
+    // core.runner._run_stat_farm_task.
+    stat_farm_loadouts: [], stat_farm_wave_target: STATFARM_DEFAULT_WAVE_TARGET,
+    stat_farm_check_interval: STATFARM_DEFAULT_CHECK_INTERVAL,
   };
 }
 
@@ -2725,12 +2743,27 @@ function setTaskProp(id, key, value) {
   saveTaskQueue();
 }
 
+// Stat Farm's loadout picker: no <select multiple> or chip-picker component
+// exists elsewhere in the app, so this is a small bespoke toggle -- flips
+// membership in t.stat_farm_loadouts (1-8) rather than going through
+// setTaskProp (that helper assumes one scalar value per key, not a set).
+function toggleStatFarmLoadout(id, num) {
+  const t = findTask(id);
+  if (!t) return;
+  const set = new Set(t.stat_farm_loadouts || []);
+  if (set.has(num)) set.delete(num); else set.add(num);
+  t.stat_farm_loadouts = [...set].sort((a, b) => a - b);
+  updateQueueRowInPlace(t);
+  renderTaskBuilder();
+  saveTaskQueue();
+}
+
 function taskOpts(list, current, fmt) {
   return list.map(o => `<option value="${escapeHtml(o)}" ${String(o) === String(current) ? 'selected' : ''}>${escapeHtml(fmt ? fmt(o) : o)}</option>`).join('');
 }
 
 // One accent per mode so the queue scans by color before you even read it.
-const TASK_MODE_COLORS = { story: 'var(--brand)', raid: 'var(--rose)', expedition: 'var(--teal)', event: 'var(--amber)', tournament: 'var(--lilac)' };
+const TASK_MODE_COLORS = { story: 'var(--brand)', raid: 'var(--rose)', expedition: 'var(--teal)', event: 'var(--amber)', tournament: 'var(--lilac)', stat_farm: 'var(--slate)' };
 
 // The two text lines a queue row shows for a task -- where it goes, then how
 // it runs. All editing happens in the Builder, rows are read-only summaries.
@@ -2739,19 +2772,23 @@ function taskSummary(t) {
   let title = d.label;
   if (t.mode === 'story' || t.mode === 'raid') {
     title += ` · ${t.map} · ${/^\d+$/.test(t.stage) ? 'Stage ' + t.stage : t.stage}`;
-  } else if (t.mode === 'expedition' || t.mode === 'tournament') {
+  } else if (t.mode === 'expedition' || t.mode === 'tournament' || t.mode === 'stat_farm') {
     title += ` · ${t.map}`;
   } else if (t.mode === 'event') {
     title += ` · Act ${t.stage}`;
   }
   const specialStage = t.mode === 'story' && (t.stage === 'Infinite' || t.stage === 'Mastery');
   const diff = ((t.mode === 'story' && !specialStage) || t.mode === 'expedition') ? t.difficulty
-             : (d.fixedDifficulty || specialStage) ? 'Hard' : '';
+             : (d.fixedDifficulty || specialStage || t.mode === 'stat_farm') ? 'Hard' : '';
+  const loadoutCount = t.mode === 'stat_farm' ? (t.stat_farm_loadouts || []).length : 0;
   const meta = [
-    `×${t.repeat}`,
+    t.mode === 'stat_farm' ? '' : `×${t.repeat}`,
     diff,
     t.mode === 'story' && t.stage === 'Infinite'
       ? `Stop after wave ${t.infinite_wave_limit || DEFAULT_INFINITE_WAVE_LIMIT}` : '',
+    t.mode === 'stat_farm'
+      ? `To wave ${t.stat_farm_wave_target || STATFARM_DEFAULT_WAVE_TARGET} · check every ${t.stat_farm_check_interval || STATFARM_DEFAULT_CHECK_INTERVAL} · ${loadoutCount} loadout${loadoutCount === 1 ? '' : 's'}`
+      : '',
     t.mode === 'tournament' ? '' : (t.play_mode === 'matchmaking' ? 'Matchmaking' : 'Solo'),
     t.macro ? `▸ ${t.macro}` : '',
     (t.mode === 'event' && t.stage !== '4' && t.act4_on_drop)
@@ -2823,10 +2860,15 @@ function renderTaskBuilder() {
   const field = (label, control, tooltip = '') => `<div class="task-field" ${tooltip ? `data-tooltip="${escapeHtml(tooltip)}"` : ''}><span>${label}</span>${control}</div>`;
 
   const fields = [
-    field('Mode', sel('mode', Object.keys(TASK_DATA), k => TASK_DATA[k].label, 'Select game mode: Story, Raid, Expedition, or Event'), 'Choose game mode'),
-    field('Repeat', `<div class="task-rep-group" style="width: 100%;">&times;<input type="number" min="1" value="${t.repeat}"
-      oninput="setTaskProp('${t.id}', 'repeat', Math.max(1, parseInt(this.value, 10) || 1))"></div>`, 'Number of times to run this task'),
+    field('Mode', sel('mode', Object.keys(TASK_DATA), k => TASK_DATA[k].label, 'Select game mode: Story, Raid, Expedition, Event, Tournament, or Stat Farm'), 'Choose game mode'),
   ];
+  // Stat Farm has no fixed repeat count -- it round-robins its selected
+  // loadouts until every one is fully done (see core.runner._run_stat_farm_task),
+  // so the generic Repeat field would just be dead UI for this mode.
+  if (t.mode !== 'stat_farm') {
+    fields.push(field('Repeat', `<div class="task-rep-group" style="width: 100%;">&times;<input type="number" min="1" value="${t.repeat}"
+      oninput="setTaskProp('${t.id}', 'repeat', Math.max(1, parseInt(this.value, 10) || 1))"></div>`, 'Number of times to run this task'));
+  }
 
   if (t.mode === 'story' || t.mode === 'raid') {
     fields.push(field('Map', sel('map', d.maps, null, 'Select map')));
@@ -2838,12 +2880,14 @@ function renderTaskBuilder() {
     fields.push(field('Act', sel('stage', d.stages, s => 'Act ' + s, 'Select Event Act 1-4'), 'Select Event Act 1-4'));
   } else if (t.mode === 'tournament') {
     fields.push(field('Type', sel('map', d.maps, null, 'Select the Tournament type to enter'), 'Select the Tournament type to enter'));
+  } else if (t.mode === 'stat_farm') {
+    fields.push(field('Map', sel('map', d.maps, null, 'Select the Infinite-capable map to grind on'), 'Select the Infinite-capable map to grind on'));
   }
 
   const specialStage = t.mode === 'story' && (t.stage === 'Infinite' || t.stage === 'Mastery');
   if ((t.mode === 'story' && !specialStage) || t.mode === 'expedition') {
     fields.push(field('Difficulty', sel('difficulty', d.difficulties, null, 'Select difficulty level')));
-  } else if (d.fixedDifficulty || specialStage) {
+  } else if (d.fixedDifficulty || specialStage || t.mode === 'stat_farm') {
     fields.push(field('Difficulty', `<span class="task-chip" style="align-self: flex-start;">Hard &middot; locked</span>`, 'Difficulty locked to Hard for this mode'));
   }
 
@@ -2852,6 +2896,25 @@ function renderTaskBuilder() {
       value="${Math.max(1, parseInt(t.infinite_wave_limit, 10) || DEFAULT_INFINITE_WAVE_LIMIT)}"
       oninput="setTaskProp('${t.id}', 'infinite_wave_limit', Math.max(1, parseInt(this.value, 10) || 1))">`,
       'The macro lets this wave finish, then leaves when the next wave begins'));
+  }
+
+  if (t.mode === 'stat_farm') {
+    const waveTarget = Math.max(1, parseInt(t.stat_farm_wave_target, 10) || STATFARM_DEFAULT_WAVE_TARGET);
+    fields.push(field('Run to Wave', `<input type="number" class="block-input" min="1"
+      value="${waveTarget}"
+      oninput="setTaskProp('${t.id}', 'stat_farm_wave_target', Math.max(1, parseInt(this.value, 10) || 1)); renderTaskBuilder()">`,
+      "Restart the Infinite run in place if this wave is reached before every fodder unit hits 400% worthiness"));
+    const checkInterval = Math.min(waveTarget, Math.max(1, parseInt(t.stat_farm_check_interval, 10) || STATFARM_DEFAULT_CHECK_INTERVAL));
+    fields.push(field('Worthiness Check Interval', `<input type="number" class="block-input" min="1" max="${waveTarget}"
+      value="${checkInterval}"
+      oninput="setTaskProp('${t.id}', 'stat_farm_check_interval', Math.min(${waveTarget}, Math.max(1, parseInt(this.value, 10) || 1)))">`,
+      "How often (in waves) to hover-check each fodder unit's worthiness"));
+    const selectedLoadouts = new Set(t.stat_farm_loadouts || []);
+    const loadoutChips = Array.from({ length: STATFARM_LOADOUT_COUNT }, (_, i) => i + 1).map(n => `
+      <button type="button" class="seg-btn ${selectedLoadouts.has(n) ? 'active' : ''}"
+              style="min-width: 32px; padding: 4px 0;" onclick="toggleStatFarmLoadout('${t.id}', ${n})">${n}</button>`).join('');
+    fields.push(field('Loadouts', `<div class="seg-toggle" style="flex-wrap: wrap; width: auto;">${loadoutChips}</div>`,
+      'Which Team Loadout slots (1-8) to round-robin farm'));
   }
 
   if (t.mode === 'expedition') {
@@ -2925,12 +2988,15 @@ function renderTaskBuilder() {
     ? `<div class="wh-hint"><b>Stop After Wave</b> completes the wave you enter, waits for the counter to advance once, then uses Leave Stage and returns to the lobby. For example, 20 leaves when wave 21 begins.</div>` : '';
   const act4Hint = (t.mode === 'event' && t.stage !== '4' && t.act4_on_drop)
     ? `<div class="wh-hint">When a Crow Relic drops on a win, the run leaves this stage, clears Act 4 (Crow - Dawn) with its own Macro Operation above, then comes back. <b>Once</b> spends one relic; <b>Until locked</b> spends every banked relic. Give Act 4 its own Macro Operation ${'&#8212;'} it plays nothing like Acts 1-3.</div>` : '';
+  const statFarmHint = t.mode === 'stat_farm'
+    ? `<div class="wh-hint">Grinds worthiness on the selected map's Infinite stage, then rerolls fodder units' (Team Loadout slots 2-6) stats until your in-game filter hits, one loadout at a time. <b>Run to Wave</b> restarts the Infinite run in place (no lobby trip) if worthiness isn't full yet -- it does not end the task. Whichever selected loadout has the fewest filter hits farms next, so progress stays even across all of them. The task finishes on its own once every selected loadout's 5 fodder units are done.</div>` : '';
   el.innerHTML = `
     <div class="task-builder-grid">${fields.join('')}</div>
     ${extractHint}
     ${infiniteHint}
     ${act4Hint}
-    <div class="wh-hint" style="margin-top: 8px;">The macro's Team Loadout comes from its template (Macro Manager tab).</div>
+    ${statFarmHint}
+    ${t.mode === 'stat_farm' ? '' : '<div class="wh-hint" style="margin-top: 8px;">The macro\'s Team Loadout comes from its template (Macro Manager tab).</div>'}
     <div class="flex items-center gap-2" style="margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border);">
       <button class="task-toolbar-btn add" onclick="cloneTaskCard('${t.id}')">&#10697; Clone Task</button>
       <span class="flex-1"></span>

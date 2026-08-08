@@ -62,11 +62,47 @@ def test_new_tasks_have_a_bounded_infinite_wave_default(tmp_path):
     out = run_js("""
         const TASK_DATA = { story: { maps: ['Map'] } };
         const DEFAULT_INFINITE_WAVE_LIMIT = 20;
+        const STATFARM_DEFAULT_WAVE_TARGET = 150;
+        const STATFARM_DEFAULT_CHECK_INTERVAL = 10;
         function newTaskId() { return 't1'; }
         eval(extract('defaultTask'));
         console.log(JSON.stringify(defaultTask()));
     """, tmp_path)
     assert out["infinite_wave_limit"] == 20
+
+
+def test_new_tasks_default_to_no_stat_farm_loadouts_selected(tmp_path):
+    out = run_js("""
+        const TASK_DATA = { story: { maps: ['Map'] } };
+        const DEFAULT_INFINITE_WAVE_LIMIT = 20;
+        const STATFARM_DEFAULT_WAVE_TARGET = 150;
+        const STATFARM_DEFAULT_CHECK_INTERVAL = 10;
+        function newTaskId() { return 't1'; }
+        eval(extract('defaultTask'));
+        console.log(JSON.stringify(defaultTask()));
+    """, tmp_path)
+    assert out["stat_farm_loadouts"] == []
+    assert out["stat_farm_wave_target"] == 150
+    assert out["stat_farm_check_interval"] == 10
+
+
+def test_stat_farm_task_summary_shows_map_wave_target_and_loadout_count(tmp_path):
+    out = run_js("""
+        const TASK_DATA = { stat_farm: { label: 'Stat Farm', fixedDifficulty: undefined } };
+        const DEFAULT_INFINITE_WAVE_LIMIT = 20;
+        const STATFARM_DEFAULT_WAVE_TARGET = 150;
+        const STATFARM_DEFAULT_CHECK_INTERVAL = 10;
+        eval(extract('taskSummary'));
+        console.log(JSON.stringify(taskSummary({
+          mode: 'stat_farm', map: 'School Grounds', repeat: 1, play_mode: 'solo', macro: '',
+          stat_farm_wave_target: 150, stat_farm_check_interval: 10, stat_farm_loadouts: [1, 3, 5]
+        })));
+    """, tmp_path)
+    assert "School Grounds" in out["title"]
+    assert "To wave 150" in out["meta"]
+    assert "check every 10" in out["meta"]
+    assert "3 loadouts" in out["meta"]
+    assert "×1" not in out["meta"]  # Stat Farm has no fixed repeat count
 
 
 def test_memory_refresh_hours_are_clamped_and_saved(tmp_path):
